@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "python-midas"
+version = "0.1.0"
+description = "Python client library for the California Energy Commission MIDAS API"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Clark Communications Corporation"}
+]
+keywords = ["midas", "energy", "california", "rates", "ghg", "grid"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "pydantic>=2.5",
+    "httpx>=0.27",
+    "pendulum>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-httpx>=0.30",
+    "ruff>=0.3",
+]
+
+[project.urls]
+Homepage = "https://grid-coordination.energy"
+Repository = "https://github.com/grid-coordination/python-midas"
+Issues = "https://github.com/grid-coordination/python-midas/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/midas"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that hit the live MIDAS API (require MIDAS_USERNAME/MIDAS_PASSWORD)",
+]
+
+[tool.ruff]
+src = ["src"]
