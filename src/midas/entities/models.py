@@ -135,7 +135,7 @@ class ValueData(MIDASBase):
 class RateInfo(MIDASBase):
     """Rate information and associated time-series values for a single RIN."""
 
-    id: str
+    id: str | None = None
     system_time: pendulum.DateTime | None = None
     name: str | None = None
     type: RateType | str | None = None
@@ -158,7 +158,7 @@ class RateInfo(MIDASBase):
         values = [ValueData.from_raw(v) for v in vi] if vi else []
 
         inst = cls(
-            id=raw["RateID"],
+            id=raw.get("RateID"),
             system_time=_parse_datetime(raw.get("SystemTime_UTC")),
             name=raw.get("RateName"),
             type=_parse_rate_type(raw.get("RateType")),

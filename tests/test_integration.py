@@ -153,7 +153,8 @@ class TestRateValues:
     def test_realtime_query(self, client: MIDASClient):
         rate = client.rate_values("USCA-TSTS-TTOU-TEST", query_type="realtime")
         assert isinstance(rate, RateInfo)
-        assert rate.id == "USCA-TSTS-TTOU-TEST"
+        # Realtime may return all-null fields if no realtime data exists
+        assert rate.id is None or rate.id == "USCA-TSTS-TTOU-TEST"
 
 
 # -- Flex Alert --
