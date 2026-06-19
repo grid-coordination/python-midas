@@ -10,6 +10,7 @@ import datetime
 import os
 from decimal import Decimal
 
+import pendulum
 import pytest
 
 from midas import (
@@ -143,10 +144,14 @@ class TestRateValues:
         v = rate.values[0]
         assert isinstance(v, ValueData)
         assert isinstance(v.name, str)
-        assert isinstance(v.date_start, datetime.date)
-        assert isinstance(v.date_end, datetime.date)
-        assert isinstance(v.time_start, datetime.time)
-        assert isinstance(v.time_end, datetime.time)
+        # Boundary is a (start, end) pair of zone-aware pendulum.DateTime,
+        # composed from the v2.0 UTC wire date+time.
+        assert v.period is not None
+        start, end = v.period
+        assert isinstance(start, pendulum.DateTime)
+        assert isinstance(end, pendulum.DateTime)
+        assert start.timezone_name == "UTC"
+        assert start <= end
         assert isinstance(v.value, Decimal)
         assert v.unit is not None
 
@@ -220,17 +225,10 @@ class TestHolidays:
 
 
 class TestHistorical:
-    def test_historical_list(self, client: MIDASClient):
-        rins = client.historical_list("TS", "TS")
-        assert len(rins) > 0
-        assert all(isinstance(r, RinListEntry) for r in rins)
-        # Verify deduplication: no duplicate IDs
-        ids = [r.id for r in rins]
-        assert len(ids) == len(set(ids))
-
     def test_historical_data(self, client: MIDASClient):
+        # v2.0: path-param URL, 6-month max range per call.
         rate = client.historical_data(
-            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-12-31"
+            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30"
         )
         assert isinstance(rate, RateInfo)
         assert rate.id == "USCA-TSTS-TTOU-TEST"

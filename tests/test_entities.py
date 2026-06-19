@@ -5,32 +5,42 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+import pendulum
+
 from midas.entities import (
-    coerce_historical_list,
     coerce_holidays,
     coerce_lookup_table,
     coerce_rate_info,
     coerce_rin_list,
+)
+from midas.entities.models import (
+    _parse_rate_type,
+    _parse_signal_type,
+    _parse_unit,
 )
 from midas.enums import DayType, RateType, SignalType, Unit
 
 
 # -- Fixtures --
 
-RAW_RIN_LIST = [
+# v2.0 wraps the RIN-list array under a SignalType-keyed object (here the
+# default SignalType=0 → "All"); v1.0 returned a bare array.
+RAW_RIN_LIST_ENTRIES = [
     {
         "RateID": "USCA-BNBN-EVT2-0000",
-        "SignalType": "Rates",
+        "SignalType": "Electricity Rates",
         "Description": "Rate Data for Distributor: Banning, Energy Company: Banning",
         "LastUpdated": "2021-07-14T14:31:55.653",
     },
     {
         "RateID": "USCA-LALA-TTOU-0000",
-        "SignalType": "Rates",
+        "SignalType": "Electricity Rates",
         "Description": "Rate Data for Distributor: LADWP, Energy Company: LADWP",
         "LastUpdated": "2023-06-07T15:57:48.023",
     },
 ]
+
+RAW_RIN_LIST = {"All": RAW_RIN_LIST_ENTRIES}
 
 RAW_RATE_INFO = {
     "RateID": "USCA-TSTS-TTOU-TEST",
@@ -53,7 +63,7 @@ RAW_RATE_INFO = {
             "DayEnd": "Monday",
             "TimeStart": "07:00:00",
             "TimeEnd": "07:59:59",
-            "value": 0.1006,
+            "Value": 0.1006,
             "Unit": "$/kWh",
         },
         {
@@ -64,7 +74,7 @@ RAW_RATE_INFO = {
             "DayEnd": "Tuesday",
             "TimeStart": "01:00:00",
             "TimeEnd": "01:59:59",
-            "value": 0.1388,
+            "Value": 0.1388,
             "Unit": "$/kWh",
         },
     ],
@@ -91,7 +101,7 @@ RAW_FLEX_ALERT = {
             "DayEnd": "Thursday",
             "TimeStart": "03:11",
             "TimeEnd": "03:11",
-            "value": 0.0,
+            "Value": 0.0,
             "Unit": "Event",
         },
     ],
@@ -117,23 +127,30 @@ RAW_LOOKUP_TABLE = [
     {"UploadCode": "MC", "Description": "Marin Clean Energy"},
 ]
 
-RAW_HISTORICAL_LIST_WITH_DUPES = [
-    {
-        "RateID": "USCA-TSTS-TTOU-TEST",
-        "SignalType": "Rates",
-        "Description": "Test rate",
-    },
-    {
-        "RateID": "USCA-TSTS-TTOU-TEST",
-        "SignalType": "Rates",
-        "Description": "Test rate (duplicate)",
-    },
-    {
-        "RateID": "USCA-FLEX-FXRT-0000",
-        "SignalType": "Flex Alert",
-        "Description": "Flex alert",
-    },
-]
+
+# -- v2.0 enum coverage --
+
+
+def test_signal_type_v2_labels_parse():
+    assert _parse_signal_type("Electricity Rates") == SignalType.RATES
+    assert _parse_signal_type("Greenhouse Gas Emissions") == SignalType.GHG_EMISSIONS
+    assert (
+        _parse_signal_type("California Independent System Operator Flex Alert")
+        == SignalType.FLEX_ALERT
+    )
+    # Retired v1.0 labels no longer map (coerce to None, not ValueError).
+    assert _parse_signal_type("Rates") is None
+
+
+def test_unit_v2_labels_parse():
+    assert _parse_unit("g/kWh CO2") == Unit.G_CO2_PER_KWH
+    assert _parse_unit("kg/kWh CO2") == Unit.KG_CO2_PER_KWH  # historical archive
+
+
+def test_rate_type_moer_parses():
+    assert _parse_rate_type("MOER") == RateType.MOER
+    # Unknown labels pass through as plain strings (lenient field).
+    assert _parse_rate_type("Some Future Type") == "Some Future Type"
 
 
 # -- RIN List tests --
@@ -153,7 +170,26 @@ def test_coerce_rin_list():
 
 def test_rin_list_raw_preserved():
     result = coerce_rin_list(RAW_RIN_LIST)
-    assert result[0]._raw == RAW_RIN_LIST[0]
+    assert result[0]._raw == RAW_RIN_LIST_ENTRIES[0]
+
+
+def test_coerce_rin_list_keyed_by_signal_type():
+    """v2.0 peels the entry array from the SignalType-specific key."""
+    for signal_type, key in [
+        (0, "All"),
+        (1, "Rates"),
+        (2, "GHGEmissions"),
+        (3, "FlexAlerts"),
+    ]:
+        raw = {key: RAW_RIN_LIST_ENTRIES}
+        result = coerce_rin_list(raw, signal_type)
+        assert len(result) == 2
+        assert result[0].id == "USCA-BNBN-EVT2-0000"
+
+
+def test_coerce_rin_list_empty_key():
+    """A keyed response whose array is absent peels to an empty list."""
+    assert coerce_rin_list({"Rates": []}, signal_type=1) == []
 
 
 # -- RateInfo tests --
@@ -180,12 +216,23 @@ def test_rate_info_values():
 
     v0 = rate.values[0]
     assert v0.name == "winter off peak"
-    assert v0.date_start == datetime.date(2023, 5, 1)
     assert v0.day_start == DayType.MONDAY
-    assert v0.time_start == datetime.time(7, 0, 0)
-    assert v0.time_end == datetime.time(7, 59, 59)
+    # Boundary is a (start, end) pair of zone-aware moments, composed from the
+    # v2.0 UTC wire date+time and preserved in UTC (not normalized).
+    assert v0.period is not None
+    start, end = v0.period
+    assert start == pendulum.parse("2023-05-01T07:00:00", tz="UTC")
+    assert end == pendulum.parse("2023-05-01T07:59:59", tz="UTC")
+    assert start.timezone_name == "UTC"
     assert v0.value == Decimal("0.1006")
     assert v0.unit == Unit.DOLLAR_PER_KWH
+
+
+def test_rate_info_system_time_preserved_utc():
+    # Z-suffixed wire fields keep their instant; not shifted to a display zone.
+    rate = coerce_rate_info(RAW_RATE_INFO)
+    assert rate.system_time == pendulum.parse("2026-03-19T10:03:46.379Z")
+    assert rate.system_time.timezone_name == "UTC"
 
 
 def test_rate_info_raw_preserved():
@@ -205,11 +252,24 @@ def test_coerce_flex_alert():
     assert rate.values[0].value == Decimal("0.0")
 
 
-def test_flex_alert_time_without_seconds():
+def test_flex_alert_period_time_without_seconds():
+    # Wire TimeStart/TimeEnd here are "HH:MM" (no seconds); they still compose
+    # into a UTC moment pair.
     rate = coerce_rate_info(RAW_FLEX_ALERT)
     v = rate.values[0]
-    assert v.time_start == datetime.time(3, 11)
-    assert v.time_end == datetime.time(3, 11)
+    assert v.period is not None
+    start, end = v.period
+    assert start == pendulum.parse("2026-03-19T03:11:00", tz="UTC")
+    assert end == pendulum.parse("2026-03-19T03:11:00", tz="UTC")
+
+
+def test_rin_last_updated_is_pacific_local():
+    # Bare administrative field — attached to America/Los_Angeles wall-clock.
+    result = coerce_rin_list(RAW_RIN_LIST)
+    lu = result[0].last_updated
+    assert lu is not None
+    assert lu.timezone_name == "America/Los_Angeles"
+    assert (lu.year, lu.month, lu.day, lu.hour) == (2021, 7, 14, 14)
 
 
 # -- Holiday tests --
@@ -245,18 +305,3 @@ def test_coerce_lookup_table():
 def test_lookup_raw_preserved():
     result = coerce_lookup_table(RAW_LOOKUP_TABLE)
     assert result[0]._raw == RAW_LOOKUP_TABLE[0]
-
-
-# -- Historical list dedup tests --
-
-
-def test_coerce_historical_list_dedup():
-    result = coerce_historical_list(RAW_HISTORICAL_LIST_WITH_DUPES)
-    assert len(result) == 2
-    ids = [e.id for e in result]
-    assert ids == ["USCA-TSTS-TTOU-TEST", "USCA-FLEX-FXRT-0000"]
-
-
-def test_historical_list_keeps_first():
-    result = coerce_historical_list(RAW_HISTORICAL_LIST_WITH_DUPES)
-    assert result[0].description == "Test rate"  # first, not duplicate

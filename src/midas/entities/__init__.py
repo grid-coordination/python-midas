@@ -9,6 +9,7 @@ from midas.entities.models import (
     LookupEntry,
     RateInfo,
     RinListEntry,
+    RinListResponse,
     ValueData,
 )
 
@@ -18,9 +19,15 @@ def coerce_rate_info(raw: dict[str, Any]) -> RateInfo:
     return RateInfo.from_raw(raw)
 
 
-def coerce_rin_list(raw: list[dict[str, Any]]) -> list[RinListEntry]:
-    """Coerce a raw RIN list response into a list of RinListEntry models."""
-    return [RinListEntry.from_raw(entry) for entry in raw]
+def coerce_rin_list(
+    raw: dict[str, Any], signal_type: int = 0
+) -> list[RinListEntry]:
+    """Coerce a v2.0 keyed RIN-list response into a list of RinListEntry models.
+
+    v2.0 wraps the entry array under one of Rates/GHGEmissions/FlexAlerts/All,
+    keyed by ``signal_type``; this peels that key into a flat list.
+    """
+    return RinListResponse.from_raw(raw, signal_type).entries
 
 
 def coerce_holidays(raw: list[dict[str, Any]]) -> list[Holiday]:
@@ -33,27 +40,15 @@ def coerce_lookup_table(raw: list[dict[str, Any]]) -> list[LookupEntry]:
     return [LookupEntry.from_raw(entry) for entry in raw]
 
 
-def coerce_historical_list(raw: list[dict[str, Any]]) -> list[RinListEntry]:
-    """Coerce a raw historical list response, deduplicating by RIN ID."""
-    seen: set[str] = set()
-    result: list[RinListEntry] = []
-    for entry in raw:
-        rid = entry["RateID"]
-        if rid not in seen:
-            seen.add(rid)
-            result.append(RinListEntry.from_raw(entry))
-    return result
-
-
 __all__ = [
     "coerce_rate_info",
     "coerce_rin_list",
     "coerce_holidays",
     "coerce_lookup_table",
-    "coerce_historical_list",
     "Holiday",
     "LookupEntry",
     "RateInfo",
     "RinListEntry",
+    "RinListResponse",
     "ValueData",
 ]

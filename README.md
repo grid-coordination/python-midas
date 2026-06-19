@@ -36,12 +36,23 @@ for rin in rins:
 rate = client.rate_values(rins[0].id)
 print(f"{rate.name} ({rate.type})")
 for v in rate.values:
-    print(f"  {v.date_start} {v.time_start}-{v.time_end}: {v.value} {v.unit}")
+    start, end = v.period          # zone-aware (start, end) — UTC on the wire
+    print(f"  {start}–{end}: {v.value} {v.unit}")
 ```
 
 ## Authentication
 
-MIDAS uses HTTP Basic authentication to acquire a short-lived bearer token (valid for 10 minutes). The library provides two client creation modes:
+In MIDAS **v2.0**, all public GET endpoints (rate values, RIN list, lookup tables, holidays, historical data) are **unauthenticated** — use `create_anonymous_client` for read-only access:
+
+```python
+from midas import create_anonymous_client
+
+with create_anonymous_client() as client:
+    rins = client.rin_list()
+    rate = client.rate_values(rins[0].id)
+```
+
+Authentication is still required for **uploads** (LSE rate submission, POST). MIDAS uses HTTP Basic authentication to acquire a short-lived bearer token (valid for 10 minutes); the library provides two authenticated client modes:
 
 ### Auto-refreshing client (recommended)
 
@@ -83,7 +94,7 @@ client = MIDASClient(token=token_info["token"])
 
 ## API Coverage
 
-The MIDAS API has a single multiplexed `/ValueData` endpoint that serves different response shapes depending on query parameters, plus separate endpoints for holidays and historical data. All six operations are covered:
+The MIDAS API has a single multiplexed `/ValueData` endpoint that serves different response shapes depending on query parameters, plus separate endpoints for holidays and historical data. All operations are covered:
 
 ### RIN List
 
@@ -97,8 +108,9 @@ flex_rins = client.rin_list(signal_type=3)  # Flex Alert only
 ```
 
 Each `RinListEntry` has:
+
 - `id` — the RIN string (e.g. `"USCA-PGPG-ETOU-0000"`)
-- `signal_type` — `SignalType.RATES`, `SignalType.GHG`, or `SignalType.FLEX_ALERT`
+- `signal_type` — `SignalType.RATES`, `SignalType.GHG_EMISSIONS`, or `SignalType.FLEX_ALERT` (v2.0 long-form wire labels)
 - `description` — human-readable description
 - `last_updated` — `pendulum.DateTime` of last data update
 
@@ -112,6 +124,7 @@ rate = client.rate_values("USCA-TSTS-TTOU-TEST", query_type="realtime")
 ```
 
 The `RateInfo` model contains:
+
 - `id` — the RIN
 - `name` — rate name (e.g. `"CEC TEST24HTOU"`)
 - `type` — `RateType` enum (`TOU`, `CPP`, `RTP`, `GHG`, `FLEX_ALERT`) or raw string
@@ -122,10 +135,10 @@ The `RateInfo` model contains:
 - `values` — list of `ValueData` intervals
 
 Each `ValueData` interval has:
-- `name` — period description (e.g. `"winter off peak"`)
-- `date_start`, `date_end` — `datetime.date`
+
+- `name` — interval description (e.g. `"winter off peak"`)
+- `period` — `(start, end)` tuple of zone-aware `pendulum.DateTime` moments (or `None` when a boundary is absent). Composed from the v2.0 UTC wire date+time and kept in UTC; convert with `.in_tz(...)`. See [Time and timezones](#time-and-timezones).
 - `day_start`, `day_end` — `DayType` enum (Monday through Sunday, plus Holiday)
-- `time_start`, `time_end` — `datetime.time` (handles both `HH:MM:SS` and `HH:MM` formats)
 - `value` — `Decimal` (preserves precision for financial data)
 - `unit` — `Unit` enum (`$/kWh`, `$/kW`, `kg/kWh CO2`, `Event`, etc.)
 
@@ -158,17 +171,15 @@ Each `Holiday` has `energy_code`, `energy_name`, `date` (`datetime.date`), and `
 
 ### Historical Data
 
-Query archived rate data by provider and date range:
+Query archived rate data for a RIN over a date range (v2.0 caps each call at a **6-month** range and takes the RIN as a path parameter):
 
 ```python
-# List RINs with historical data for a provider pair
-hist_rins = client.historical_list("PG", "PG")  # PG&E distribution + energy
-
-# Fetch archived data for a date range
-hist = client.historical_data("USCA-PGPG-ETOU-0000", "2023-01-01", "2023-12-31")
+hist = client.historical_data("USCA-PGPG-ETOU-0000", "2023-01-01", "2023-06-30")
 ```
 
-The historical list is automatically deduplicated (the live API returns duplicate entries).
+A range longer than six months raises `ValueError` — split it into multiple calls.
+
+> The v1.0 `historical_list` / `get_historical_list` methods are **removed** — v2.0 retires the `/HistoricalList` endpoint. For the full active RIN list use `client.rin_list(signal_type=0)`.
 
 ## Signal Type Helpers
 
@@ -182,6 +193,30 @@ client.flex_alert(rate)        # True if Flex Alert signal
 client.flex_alert_active(rate) # True if Flex Alert with any non-zero value
 ```
 
+## Time and timezones
+
+Every coerced datetime is a zone-aware `pendulum.DateTime` — Python's equivalent of Java's `ZonedDateTime` (it carries an IANA zone, not just a fixed offset, so it is DST-correct). The guiding principle, shared with [clj-midas](https://github.com/grid-coordination/clj-midas) and [python-oa3](https://github.com/grid-coordination/python-oa3): **you always know what zone a value is in, and you convert it yourself.** The library preserves the honest wire zone and never normalizes to a single display zone.
+
+MIDAS mixes two wire conventions and does not tag the bare ones; python-midas encodes the documented zone for each field (see [midas-api-specs/doc/datetime-and-timezone.md](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/datetime-and-timezone.md)):
+
+| Field | Wire form (v2.0) | Coerced as |
+|-------|------------------|------------|
+| `system_time`, `signup_close` | `Z`-suffixed (UTC) | `pendulum.DateTime` in **UTC** — instant preserved |
+| `ValueData.period` (start, end) | bare `DateStart`/`TimeStart`/…, **UTC** in v2.0 | pair of `pendulum.DateTime` in **UTC** |
+| `last_updated` | bare, no zone | `pendulum.DateTime` in **America/Los_Angeles** (documented PT, pending post-release re-verification) |
+
+```python
+rate = client.rate_values("USCA-TSTS-TTOU-TEST")
+start, end = rate.values[0].period
+start                                       # 2026-05-01 07:00:00+00:00   (UTC, as delivered)
+start.in_tz("America/Los_Angeles")          # 2026-05-01 00:00:00-07:00   (you convert)
+start.in_tz("America/Los_Angeles").date()   # datetime.date(2026, 5, 1)   (wall-clock date)
+```
+
+In v2.0 (effective 2026-06-22) MIDAS delivers every `ValueInformation` date/time field in UTC for all signal types — fixing the v1.0 bug where SGIP GHG and Flex Alert timestamps arrived Pacific-local on the wire. The parsing rules live in `midas.time` (`parse_instant`, `parse_local`, `parse_value_moment`, and the `PendulumDateTime` Pydantic type).
+
+> The v1.0 zone-naive fields `date_start`, `date_end`, `time_start`, `time_end` (`datetime.date` / `datetime.time`) are **removed** in favour of `period`: a bare wall-clock time with no zone is ambiguous, whereas the `(start, end)` moments are self-describing. The exact wire strings remain on `_raw`.
+
 ## Two-Layer Data Model
 
 Following the [python-oa3](https://github.com/grid-coordination/python-oa3) pattern, every entity provides two layers:
@@ -191,7 +226,7 @@ Following the [python-oa3](https://github.com/grid-coordination/python-oa3) patt
 ```python
 rate = client.rate_values("USCA-TSTS-TTOU-TEST")
 rate._raw["RateID"]                           # "USCA-TSTS-TTOU-TEST"
-rate._raw["ValueInformation"][0]["value"]      # 0.1006
+rate._raw["ValueInformation"][0]["Value"]      # 0.1006  (v2.0 capitalises the key)
 rate.values[0]._raw["Unit"]                   # "$/kWh"
 ```
 
@@ -200,12 +235,11 @@ rate.values[0]._raw["Unit"]                   # "$/kWh"
 ```python
 rate.id                      # "USCA-TSTS-TTOU-TEST"
 rate.type                    # RateType.TOU
-rate.system_time             # pendulum.DateTime (UTC)
+rate.system_time             # pendulum.DateTime in UTC (Z-suffixed wire field)
 rate.values[0].value         # Decimal("0.1006")
 rate.values[0].unit          # Unit.DOLLAR_PER_KWH
 rate.values[0].day_start     # DayType.MONDAY
-rate.values[0].date_start    # datetime.date(2023, 5, 1)
-rate.values[0].time_start    # datetime.time(7, 0, 0)
+rate.values[0].period        # (DateTime, DateTime) — zone-aware (start, end)
 ```
 
 This lets you work with clean, typed data while always being able to fall back to the exact API response when needed.
@@ -224,8 +258,7 @@ resp.json()       # raw JSON list
 resp = client.get_rate_values("USCA-TSTS-TTOU-TEST", query_type="alldata")
 resp = client.get_lookup_table("Energy")
 resp = client.get_holidays()
-resp = client.get_historical_list("PG", "PG")
-resp = client.get_historical_data("USCA-PGPG-ETOU-0000", "2023-01-01", "2023-12-31")
+resp = client.get_historical_data("USCA-PGPG-ETOU-0000", "2023-01-01", "2023-06-30")
 ```
 
 **Coerced methods** return typed Pydantic models (call `raise_for_status()` internally):
@@ -235,8 +268,7 @@ rins = client.rin_list(signal_type=0)           # list[RinListEntry]
 rate = client.rate_values("USCA-TSTS-TTOU-TEST") # RateInfo
 entries = client.lookup_table("Energy")           # list[LookupEntry]
 holidays = client.holidays()                      # list[Holiday]
-rins = client.historical_list("PG", "PG")        # list[RinListEntry]
-rate = client.historical_data(rin, start, end)    # RateInfo
+rate = client.historical_data(rin, start, end)    # RateInfo (≤ 6-month range)
 ```
 
 ## Coercion Functions
@@ -247,10 +279,11 @@ You can also coerce raw dicts directly, without going through the client:
 from midas import coerce_rate_info, coerce_rin_list, coerce_holidays
 
 rate = coerce_rate_info({"RateID": "...", "ValueInformation": [...]})
-rins = coerce_rin_list([{"RateID": "...", "SignalType": "Rates", ...}])
+# v2.0 returns a SignalType-keyed object; pass signal_type to peel the right key.
+rins = coerce_rin_list({"All": [{"RateID": "...", "SignalType": "Electricity Rates", ...}]})
 ```
 
-Available: `coerce_rate_info`, `coerce_rin_list`, `coerce_holidays`, `coerce_lookup_table`, `coerce_historical_list`.
+Available: `coerce_rate_info`, `coerce_rin_list`, `coerce_holidays`, `coerce_lookup_table`.
 
 ## Enums
 
@@ -259,21 +292,23 @@ Domain values are represented as `str` enums, so they compare equal to their str
 ```python
 from midas import SignalType, RateType, Unit, DayType
 
-SignalType.RATES          # "Rates"
-SignalType.GHG            # "GHG"
-SignalType.FLEX_ALERT     # "Flex Alert"
+SignalType.RATES          # "Electricity Rates"
+SignalType.GHG_EMISSIONS  # "Greenhouse Gas Emissions"
+SignalType.FLEX_ALERT     # "California Independent System Operator Flex Alert"
 
 RateType.TOU              # "Time of use"
 RateType.CPP              # "Critical Peak Pricing"
 RateType.RTP              # "Real Time Pricing"
 RateType.GHG              # "Greenhouse Gas emissions"
 RateType.FLEX_ALERT       # "Flex Alert"
+RateType.MOER             # "MOER"  (v2.0 unified SGIP GHG signal)
 
 Unit.DOLLAR_PER_KWH       # "$/kWh"
 Unit.DOLLAR_PER_KW        # "$/kW"
 Unit.EXPORT_DOLLAR_PER_KWH # "export $/kWh"
 Unit.BACKUP_DOLLAR_PER_KWH # "backup $/kWh"
-Unit.KG_CO2_PER_KWH       # "kg/kWh CO2"
+Unit.G_CO2_PER_KWH        # "g/kWh CO2"   (v2.0 GHG — grams, 1000× the v1.0 kg value)
+Unit.KG_CO2_PER_KWH       # "kg/kWh CO2"  (historical-archive reads)
 Unit.DOLLAR_PER_KVARH      # "$/kvarh"
 Unit.EVENT                 # "Event"
 Unit.LEVEL                 # "Level"
@@ -289,9 +324,10 @@ The coercion layer applies the following transformations:
 
 | API type | Python type | Notes |
 |----------|-------------|-------|
-| Date strings (`"2023-05-01"`) | `datetime.date` | Extracts date from datetime strings too |
-| Datetime strings | `pendulum.DateTime` | Naive datetimes treated as UTC |
-| Time strings (`"07:00:00"`, `"03:11"`) | `datetime.time` | Handles both `HH:MM:SS` and `HH:MM` |
+| Zone-tagged datetime (`"…Z"`) | `pendulum.DateTime` | Instant preserved in UTC (`system_time`, `signup_close`) |
+| Bare datetime (`LastUpdated`) | `pendulum.DateTime` | Attached to `America/Los_Angeles` (no shift) |
+| `ValueInformation` date + time | `pendulum.DateTime` pair (`period`) | Composed as UTC in v2.0 — see [Time and timezones](#time-and-timezones) |
+| Holiday date (`"2025-12-25T00:00:00"`) | `datetime.date` | Date portion only |
 | Numeric values | `Decimal` | Preserves precision for financial data |
 | Signal type strings | `SignalType` enum | `None` passes through as `None` |
 | Rate type strings | `RateType` enum | Unknown values pass through as strings |
@@ -321,9 +357,10 @@ src/midas/
     client.py            # MIDASClient, create_client, create_auto_client
     auth.py              # BearerAuth, BasicAuth, AutoTokenAuth, get_token
     enums.py             # SignalType, RateType, Unit, DayType
+    time.py              # pendulum parsing + PendulumDateTime Pydantic type
     entities/
         __init__.py      # Coercion dispatch functions
-        models.py        # Pydantic models: RateInfo, ValueData, RinListEntry, Holiday, LookupEntry
+        models.py        # Pydantic models: RateInfo, ValueData, RinListEntry, RinListResponse, Holiday, LookupEntry
 tests/
     test_entities.py     # Entity coercion from raw fixture dicts
     test_client.py       # HTTP client tests with pytest-httpx
@@ -340,6 +377,8 @@ pip install -e ".[dev]"
 # Lint
 ruff check src/ tests/
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow and [CHANGELOG.md](CHANGELOG.md) for release history. The library is migrating to the MIDAS **v2.0** API for its 1.0.0 release (v2-only, breaking) — see [doc/v2-migration.md](doc/v2-migration.md).
 
 ### Tests
 

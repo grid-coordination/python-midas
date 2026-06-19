@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
-from midas.client import MIDASClient, success
+import pytest
+
+from midas.client import MIDASClient, create_anonymous_client, success
 from midas.enums import RateType, SignalType, Unit
 
 # -- Fixtures --
 
-MOCK_RIN_LIST = [
+# v2.0 wraps the RIN-list array under a SignalType-keyed object.
+MOCK_RIN_LIST_ENTRIES = [
     {
         "RateID": "USCA-TSTS-TTOU-TEST",
-        "SignalType": "Rates",
+        "SignalType": "Electricity Rates",
         "Description": "Test rate",
         "LastUpdated": "2023-06-07T15:57:48.023",
     },
 ]
+
+MOCK_RIN_LIST = {"All": MOCK_RIN_LIST_ENTRIES}
 
 MOCK_RATE_INFO = {
     "RateID": "USCA-TSTS-TTOU-TEST",
@@ -37,7 +42,7 @@ MOCK_RATE_INFO = {
             "DayEnd": "Monday",
             "TimeStart": "07:00:00",
             "TimeEnd": "07:59:59",
-            "value": 0.1006,
+            "Value": 0.1006,
             "Unit": "$/kWh",
         },
     ],
@@ -54,14 +59,6 @@ MOCK_HOLIDAYS = [
 
 MOCK_LOOKUP = [
     {"UploadCode": "PG", "Description": "Pacific Gas and Electric"},
-]
-
-MOCK_HISTORICAL_LIST = [
-    {
-        "RateID": "USCA-TSTS-TTOU-TEST",
-        "SignalType": "Rates",
-        "Description": "Test rate",
-    },
 ]
 
 BASE_URL = "https://midasapi.energy.ca.gov/api"
@@ -113,26 +110,25 @@ def test_get_lookup_table_raw(httpx_mock):
         assert success(resp)
 
 
-def test_get_historical_list_raw(httpx_mock):
-    httpx_mock.add_response(
-        url=f"{BASE_URL}/HistoricalList?DistributionCode=TS&EnergyCode=TS",
-        json=MOCK_HISTORICAL_LIST,
-    )
-    with MIDASClient(token="fake") as client:
-        resp = client.get_historical_list("TS", "TS")
-        assert success(resp)
-
-
 def test_get_historical_data_raw(httpx_mock):
+    # v2.0: RIN is a path param, not a query param.
     httpx_mock.add_response(
-        url=f"{BASE_URL}/HistoricalData?id=USCA-TSTS-TTOU-TEST&startdate=2023-01-01&enddate=2023-12-31",
+        url=f"{BASE_URL}/HistoricalData/USCA-TSTS-TTOU-TEST?startdate=2023-01-01&enddate=2023-06-30",
         json=MOCK_RATE_INFO,
     )
     with MIDASClient(token="fake") as client:
         resp = client.get_historical_data(
-            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-12-31"
+            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30"
         )
         assert success(resp)
+
+
+def test_historical_data_range_over_six_months_rejected():
+    with MIDASClient(token="fake") as client:
+        with pytest.raises(ValueError, match="6-month"):
+            client.get_historical_data(
+                "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-12-31"
+            )
 
 
 # -- Coerced method tests --
@@ -141,7 +137,7 @@ def test_get_historical_data_raw(httpx_mock):
 def test_rin_list_coerced(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE_URL}/ValueData?SignalType=1",
-        json=MOCK_RIN_LIST,
+        json={"Rates": MOCK_RIN_LIST_ENTRIES},
     )
     with MIDASClient(token="fake") as client:
         rins = client.rin_list(signal_type=1)
@@ -185,25 +181,14 @@ def test_lookup_table_coerced(httpx_mock):
         assert entries[0].code == "PG"
 
 
-def test_historical_list_coerced(httpx_mock):
-    httpx_mock.add_response(
-        url=f"{BASE_URL}/HistoricalList?DistributionCode=TS&EnergyCode=TS",
-        json=MOCK_HISTORICAL_LIST,
-    )
-    with MIDASClient(token="fake") as client:
-        rins = client.historical_list("TS", "TS")
-        assert len(rins) == 1
-        assert rins[0].id == "USCA-TSTS-TTOU-TEST"
-
-
 def test_historical_data_coerced(httpx_mock):
     httpx_mock.add_response(
-        url=f"{BASE_URL}/HistoricalData?id=USCA-TSTS-TTOU-TEST&startdate=2023-01-01&enddate=2023-12-31",
+        url=f"{BASE_URL}/HistoricalData/USCA-TSTS-TTOU-TEST?startdate=2023-01-01&enddate=2023-06-30",
         json=MOCK_RATE_INFO,
     )
     with MIDASClient(token="fake") as client:
         rate = client.historical_data(
-            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-12-31"
+            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30"
         )
         assert rate.id == "USCA-TSTS-TTOU-TEST"
 
@@ -227,7 +212,7 @@ def test_ghg_detection():
                 "DayEnd": "Monday",
                 "TimeStart": "00:00:00",
                 "TimeEnd": "00:59:59",
-                "value": 0.5,
+                "Value": 0.5,
                 "Unit": "kg/kWh CO2",
             }
         ],
@@ -235,6 +220,35 @@ def test_ghg_detection():
     rate = RateInfo.from_raw(raw)
     assert MIDASClient.ghg(rate) is True
     assert MIDASClient.flex_alert(rate) is False
+
+
+def test_ghg_detection_v2_moer_grams():
+    from midas.entities.models import RateInfo
+
+    # v2.0 unified GHG: MOER rate type, grams unit.
+    raw = {
+        "RateID": "USCA-SGIP-MOER-PGE",
+        "RateName": "MOER",
+        "RateType": "MOER",
+        "ValueInformation": [
+            {"ValueName": "moer", "Value": 250.0, "Unit": "g/kWh CO2"}
+        ],
+    }
+    rate = RateInfo.from_raw(raw)
+    assert rate.type == RateType.MOER
+    assert rate.values[0].unit == Unit.G_CO2_PER_KWH
+    assert MIDASClient.ghg(rate) is True
+
+
+def test_anonymous_client_sends_no_auth(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/ValueData?SignalType=0",
+        json={"All": MOCK_RIN_LIST_ENTRIES},
+    )
+    with create_anonymous_client() as client:
+        client.rin_list(signal_type=0)
+    request = httpx_mock.get_request()
+    assert "authorization" not in request.headers
 
 
 def test_flex_alert_inactive():
@@ -253,7 +267,7 @@ def test_flex_alert_inactive():
                 "DayEnd": "Thursday",
                 "TimeStart": "03:11",
                 "TimeEnd": "03:11",
-                "value": 0.0,
+                "Value": 0.0,
                 "Unit": "Event",
             }
         ],
@@ -279,7 +293,7 @@ def test_flex_alert_active():
                 "DayEnd": "Thursday",
                 "TimeStart": "14:00",
                 "TimeEnd": "21:00",
-                "value": 1.0,
+                "Value": 1.0,
                 "Unit": "Event",
             }
         ],

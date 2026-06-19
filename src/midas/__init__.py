@@ -5,12 +5,12 @@ from midas.client import (
     API_URL,
     MIDASClient,
     body,
+    create_anonymous_client,
     create_auto_client,
     create_client,
     success,
 )
 from midas.entities import (
-    coerce_historical_list,
     coerce_holidays,
     coerce_lookup_table,
     coerce_rate_info,
@@ -22,15 +22,24 @@ from midas.entities.models import (
     MIDASBase,
     RateInfo,
     RinListEntry,
+    RinListResponse,
     ValueData,
 )
 from midas.enums import DayType, RateType, SignalType, Unit
+from midas.time import (
+    MIDAS_ZONE,
+    PendulumDateTime,
+    parse_instant,
+    parse_local,
+    parse_value_moment,
+)
 
 __all__ = [
     # Client
     "MIDASClient",
     "create_client",
     "create_auto_client",
+    "create_anonymous_client",
     "success",
     "body",
     "API_URL",
@@ -45,12 +54,12 @@ __all__ = [
     "coerce_rin_list",
     "coerce_holidays",
     "coerce_lookup_table",
-    "coerce_historical_list",
     # Entity models
     "MIDASBase",
     "RateInfo",
     "ValueData",
     "RinListEntry",
+    "RinListResponse",
     "Holiday",
     "LookupEntry",
     # Enums
@@ -58,4 +67,10 @@ __all__ = [
     "RateType",
     "Unit",
     "DayType",
+    # Time
+    "MIDAS_ZONE",
+    "PendulumDateTime",
+    "parse_instant",
+    "parse_local",
+    "parse_value_moment",
 ]
