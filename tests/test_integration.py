@@ -185,8 +185,18 @@ class TestFlexAlert:
 class TestLookupTable:
     @pytest.mark.parametrize(
         "table_name",
-        ["Country", "Daytype", "Distribution", "Enduse", "Energy",
-         "Location", "Ratetype", "Sector", "State", "Unit"],
+        [
+            "Country",
+            "Daytype",
+            "Distribution",
+            "Enduse",
+            "Energy",
+            "Location",
+            "Ratetype",
+            "Sector",
+            "State",
+            "Unit",
+        ],
     )
     def test_all_tables(self, client: MIDASClient, table_name: str):
         entries = client.lookup_table(table_name)
@@ -227,9 +237,7 @@ class TestHolidays:
 class TestHistorical:
     def test_historical_data(self, client: MIDASClient):
         # v2.0: path-param URL, 6-month max range per call.
-        rate = client.historical_data(
-            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30"
-        )
+        rate = client.historical_data("USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30")
         assert isinstance(rate, RateInfo)
         assert rate.id == "USCA-TSTS-TTOU-TEST"
         assert len(rate.values) > 0

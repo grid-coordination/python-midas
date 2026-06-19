@@ -187,9 +187,7 @@ def test_historical_data_coerced(httpx_mock):
         json=MOCK_RATE_INFO,
     )
     with MIDASClient(token="fake") as client:
-        rate = client.historical_data(
-            "USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30"
-        )
+        rate = client.historical_data("USCA-TSTS-TTOU-TEST", "2023-01-01", "2023-06-30")
         assert rate.id == "USCA-TSTS-TTOU-TEST"
 
 

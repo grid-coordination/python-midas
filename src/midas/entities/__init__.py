@@ -19,9 +19,7 @@ def coerce_rate_info(raw: dict[str, Any]) -> RateInfo:
     return RateInfo.from_raw(raw)
 
 
-def coerce_rin_list(
-    raw: dict[str, Any], signal_type: int = 0
-) -> list[RinListEntry]:
+def coerce_rin_list(raw: dict[str, Any], signal_type: int = 0) -> list[RinListEntry]:
     """Coerce a v2.0 keyed RIN-list response into a list of RinListEntry models.
 
     v2.0 wraps the entry array under one of Rates/GHGEmissions/FlexAlerts/All,

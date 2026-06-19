@@ -59,7 +59,9 @@ class MIDASClient:
         self.base_url = base_url.rstrip("/")
         _timeout = httpx.Timeout(timeout, connect=timeout)
         if auth:
-            self._http = httpx.Client(base_url=self.base_url, auth=auth, timeout=_timeout)
+            self._http = httpx.Client(
+                base_url=self.base_url, auth=auth, timeout=_timeout
+            )
         elif token:
             self._http = httpx.Client(
                 base_url=self.base_url, auth=BearerAuth(token), timeout=_timeout
@@ -83,19 +85,13 @@ class MIDASClient:
         """Fetch list of available RINs by signal type (0=All, 1=Rates, 2=GHG, 3=Flex Alert)."""
         return self._http.get("/ValueData", params={"SignalType": signal_type})
 
-    def get_rate_values(
-        self, rin: str, query_type: str = "alldata"
-    ) -> httpx.Response:
+    def get_rate_values(self, rin: str, query_type: str = "alldata") -> httpx.Response:
         """Fetch rate/price values for a specific RIN."""
-        return self._http.get(
-            "/ValueData", params={"ID": rin, "QueryType": query_type}
-        )
+        return self._http.get("/ValueData", params={"ID": rin, "QueryType": query_type})
 
     def get_lookup_table(self, table_name: str) -> httpx.Response:
         """Fetch a MIDAS lookup/reference table."""
-        return self._http.get(
-            "/ValueData", params={"LookupTable": table_name}
-        )
+        return self._http.get("/ValueData", params={"LookupTable": table_name})
 
     def get_holidays(self) -> httpx.Response:
         """Fetch all utility holidays."""
@@ -123,9 +119,7 @@ class MIDASClient:
         resp.raise_for_status()
         return coerce_rin_list(resp.json(), signal_type)
 
-    def rate_values(
-        self, rin: str, query_type: str = "alldata"
-    ) -> RateInfo:
+    def rate_values(self, rin: str, query_type: str = "alldata") -> RateInfo:
         """Fetch and coerce rate values for a specific RIN."""
         resp = self.get_rate_values(rin, query_type)
         resp.raise_for_status()
@@ -143,9 +137,7 @@ class MIDASClient:
         resp.raise_for_status()
         return coerce_holidays(resp.json())
 
-    def historical_data(
-        self, rin: str, start_date: str, end_date: str
-    ) -> RateInfo:
+    def historical_data(self, rin: str, start_date: str, end_date: str) -> RateInfo:
         """Fetch and coerce historical rate data."""
         resp = self.get_historical_data(rin, start_date, end_date)
         resp.raise_for_status()
@@ -179,9 +171,7 @@ class MIDASClient:
         """True if the Flex Alert indicates an active alert (any non-zero value)."""
         if not MIDASClient.flex_alert(rate):
             return False
-        return any(
-            v.value is not None and v.value > 0 for v in rate.values
-        )
+        return any(v.value is not None and v.value > 0 for v in rate.values)
 
 
 def create_client(
