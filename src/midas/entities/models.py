@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -10,6 +9,11 @@ import pendulum
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from midas.enums import DayType, RateType, SignalType, Unit
+from midas.time import (
+    PendulumDateTime,
+    parse_instant,
+    parse_value_moment,
+)
 
 
 class MIDASBase(BaseModel):
@@ -25,38 +29,6 @@ class MIDASBase(BaseModel):
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> MIDASBase:
         raise NotImplementedError("Subclasses must implement from_raw")
-
-
-def _parse_date(s: str | None) -> datetime.date | None:
-    """Parse an ISO date string (YYYY-MM-DD) or extract date from datetime string."""
-    if not s or not isinstance(s, str):
-        return None
-    # Handle datetime strings like "2023-12-25T00:00:00" — take date part
-    date_part = s[:10] if len(s) >= 10 else s
-    parts = date_part.split("-")
-    return datetime.date(int(parts[0]), int(parts[1]), int(parts[2]))
-
-
-def _parse_datetime(s: str | None) -> pendulum.DateTime | None:
-    """Parse an ISO datetime string, treating naive datetimes as UTC."""
-    if not s or not isinstance(s, str):
-        return None
-    dt = pendulum.parse(s)
-    if dt.timezone is None or dt.timezone_name is None:
-        dt = dt.in_tz("UTC")
-    return dt
-
-
-def _parse_time(s: str | None) -> datetime.time | None:
-    """Parse a time string (HH:MM:SS or HH:MM)."""
-    if not s or not isinstance(s, str):
-        return None
-    parts = s.split(":")
-    if len(parts) == 2:
-        return datetime.time(int(parts[0]), int(parts[1]))
-    if len(parts) == 3:
-        return datetime.time(int(parts[0]), int(parts[1]), int(parts[2]))
-    return None
 
 
 def _parse_decimal(n: int | float | None) -> Decimal | None:
@@ -103,29 +75,33 @@ def _parse_signal_type(s: str | None) -> SignalType | None:
 
 
 class ValueData(MIDASBase):
-    """A single time-series interval with a price or emissions value."""
+    """A single time-series interval with a price or emissions value.
+
+    The interval boundary is exposed as ``period`` — a ``(start, end)`` pair of
+    zone-aware ``pendulum.DateTime`` moments composed from the UTC wire date+time
+    (v2.0 delivers ``ValueInformation`` timestamps in UTC). Need a wall-clock
+    date or time? Derive it from a period endpoint (``period[0].in_tz(...)`` then
+    ``.date()`` / ``.time()``). The original wire strings remain on ``_raw``.
+    """
 
     name: str
-    date_start: datetime.date | None = None
-    date_end: datetime.date | None = None
+    period: tuple[pendulum.DateTime, pendulum.DateTime] | None = None
     day_start: DayType | None = None
     day_end: DayType | None = None
-    time_start: datetime.time | None = None
-    time_end: datetime.time | None = None
     value: Decimal | None = None
     unit: Unit | str | None = None
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> ValueData:
+        start = parse_value_moment(raw.get("DateStart"), raw.get("TimeStart"))
+        end = parse_value_moment(raw.get("DateEnd"), raw.get("TimeEnd"))
+        period = (start, end) if start is not None and end is not None else None
         inst = cls(
             name=raw["ValueName"],
-            date_start=_parse_date(raw.get("DateStart")),
-            date_end=_parse_date(raw.get("DateEnd")),
+            period=period,
             day_start=_parse_day_type(raw.get("DayStart")),
             day_end=_parse_day_type(raw.get("DayEnd")),
-            time_start=_parse_time(raw.get("TimeStart")),
-            time_end=_parse_time(raw.get("TimeEnd")),
-            value=_parse_decimal(raw.get("value")),
+            value=_parse_decimal(raw.get("Value")),
             unit=_parse_unit(raw.get("Unit")),
         )
         inst._raw = raw
@@ -136,7 +112,7 @@ class RateInfo(MIDASBase):
     """Rate information and associated time-series values for a single RIN."""
 
     id: str | None = None
-    system_time: pendulum.DateTime | None = None
+    system_time: PendulumDateTime = None
     name: str | None = None
     type: RateType | str | None = None
     sector: str | None = None
@@ -145,7 +121,7 @@ class RateInfo(MIDASBase):
     rate_plan_url: str | None = None
     alt_name_1: str | None = None
     alt_name_2: str | None = None
-    signup_close: pendulum.DateTime | None = None
+    signup_close: PendulumDateTime = None
     values: list[ValueData] = []
 
     @classmethod
@@ -159,7 +135,7 @@ class RateInfo(MIDASBase):
 
         inst = cls(
             id=raw.get("RateID"),
-            system_time=_parse_datetime(raw.get("SystemTime_UTC")),
+            system_time=parse_instant(raw.get("SystemTime_UTC")),
             name=raw.get("RateName"),
             type=_parse_rate_type(raw.get("RateType")),
             sector=raw.get("Sector"),
@@ -168,7 +144,7 @@ class RateInfo(MIDASBase):
             rate_plan_url=raw.get("RatePlan_Url"),
             alt_name_1=raw.get("AltRateName1"),
             alt_name_2=raw.get("AltRateName2"),
-            signup_close=_parse_datetime(raw.get("SignupCloseDate")),
+            signup_close=parse_instant(raw.get("SignupCloseDate")),
             values=values,
         )
         inst._raw = raw
@@ -176,12 +152,12 @@ class RateInfo(MIDASBase):
 
 
 class RinListEntry(MIDASBase):
-    """A RIN catalog entry from the RIN list or historical list endpoints."""
+    """A RIN catalog entry from the RIN-list endpoint."""
 
     id: str
     signal_type: SignalType | None = None
     description: str | None = None
-    last_updated: pendulum.DateTime | None = None
+    last_updated: PendulumDateTime = None
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> RinListEntry:
@@ -189,43 +165,94 @@ class RinListEntry(MIDASBase):
             id=raw["RateID"],
             signal_type=_parse_signal_type(raw.get("SignalType")),
             description=raw.get("Description"),
-            last_updated=_parse_datetime(raw.get("LastUpdated")),
+            # v2.0 UTC instant with a basic-format offset (e.g. "+0000"); the
+            # string is self-describing. Absent on Flex Alert entries → None.
+            last_updated=parse_instant(raw.get("LastUpdated")),
         )
         inst._raw = raw
         return inst
 
 
-class Holiday(MIDASBase):
-    """A utility holiday entry."""
+class RinListResponse(MIDASBase):
+    """The v2.0 keyed RIN-list response (``GET /ValueData?SignalType=N``).
 
-    energy_code: str
-    energy_name: str | None = None
-    date: datetime.date | None = None
-    description: str | None = None
+    v1.0 returned a bare array; v2.0 wraps it in a single-keyed object. On the
+    live v2.0 API the wrapper key is **always** ``Rates``, regardless of the
+    requested ``SignalType`` (confirmed 2026-06-22 for SignalType 0/1/2/3 — the
+    ``GHGEmissions``/``FlexAlerts``/``All`` keys implied by early design notes
+    do not appear on the wire). This model peels the single value without
+    switching on the key name; each entry's ``signal_type`` field still
+    identifies its signal class.
+    """
+
+    signal_type: int = 0
+    entries: list[RinListEntry] = []
 
     @classmethod
-    def from_raw(cls, raw: dict[str, Any]) -> Holiday:
+    def from_raw(cls, raw: dict[str, Any], signal_type: int = 0) -> RinListResponse:
+        # Always "Rates" on the live API; fall back to the first list value
+        # present so an unexpected wrapper key still peels correctly.
+        arr = raw.get("Rates")
+        if arr is None:
+            arr = next((v for v in raw.values() if isinstance(v, list)), None)
         inst = cls(
-            energy_code=raw["EnergyCode"],
-            energy_name=raw.get("EnergyDescription"),
-            date=_parse_date(raw.get("DateOfHoliday")),
-            description=raw.get("HolidayDescription"),
+            signal_type=signal_type,
+            entries=[RinListEntry.from_raw(e) for e in (arr or [])],
         )
         inst._raw = raw
         return inst
 
 
 class LookupEntry(MIDASBase):
-    """A reference/lookup table entry."""
+    """A reference/lookup table entry.
+
+    All rows carry ``UploadCode`` and ``Description``; some tables add extra
+    columns (e.g. the ``Unit`` table's ``PayloadDescriptor`` and ``UnitType``),
+    surfaced here as optional fields. Any other columns remain on ``_raw``.
+    """
 
     code: str
     description: str | None = None
+    payload_descriptor: str | None = None
+    unit_type: str | None = None
 
     @classmethod
     def from_raw(cls, raw: dict[str, Any]) -> LookupEntry:
         inst = cls(
             code=raw["UploadCode"],
             description=raw.get("Description"),
+            payload_descriptor=raw.get("PayloadDescriptor"),
+            unit_type=raw.get("UnitType"),
         )
         inst._raw = raw
+        return inst
+
+
+class LookupTableResponse(MIDASBase):
+    """The v2.0 keyed lookup-table response (``GET /ValueData?LookupTable=X``).
+
+    v1.0 returned a bare array; v2.0 wraps it in ``{table_name, data: [...]}``
+    (confirmed against the live API 2026-06-22). This model peels ``data`` into
+    a flat list of :class:`LookupEntry`.
+    """
+
+    table_name: str | None = None
+    entries: list[LookupEntry] = []
+
+    @classmethod
+    def from_raw(
+        cls, raw: dict[str, Any] | list[dict[str, Any]]
+    ) -> LookupTableResponse:
+        # v2.0: keyed object. Tolerate a bare list (legacy / defensive).
+        if isinstance(raw, dict):
+            table_name = raw.get("table_name")
+            rows = raw.get("data") or []
+        else:
+            table_name = None
+            rows = raw or []
+        inst = cls(
+            table_name=table_name,
+            entries=[LookupEntry.from_raw(e) for e in rows],
+        )
+        inst._raw = raw if isinstance(raw, dict) else {"data": raw}
         return inst

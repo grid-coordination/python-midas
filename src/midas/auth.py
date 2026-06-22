@@ -73,9 +73,7 @@ def get_token(
     }
 
 
-def token_expired(
-    token_info: dict[str, Any], buffer_seconds: int = 30
-) -> bool:
+def token_expired(token_info: dict[str, Any], buffer_seconds: int = 30) -> bool:
     """True if a token-info dict is expired or will expire within buffer_seconds."""
     expires_at = token_info.get("expires_at")
     if expires_at is None:

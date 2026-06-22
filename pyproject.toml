@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-midas"
-version = "0.1.1"
+version = "1.0.0"
 description = "Python client library for the California Energy Commission MIDAS API"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["midas", "energy", "california", "rates", "ghg", "grid"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -48,7 +48,7 @@ packages = ["src/midas"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: tests that hit the live MIDAS API (require MIDAS_USERNAME/MIDAS_PASSWORD)",
+    "integration: tests that hit the live MIDAS API (anonymous, no credentials)",
 ]
 
 [tool.ruff]
