@@ -18,14 +18,33 @@ class SignalType(str, Enum):
 
 
 class RateType(str, Enum):
-    TOU = "Time of use"
-    CPP = "Critical Peak Pricing"
-    RTP = "Real Time Pricing"
+    """``RateType`` wire value, which is **inconsistent across signal types**
+    in v2.0 (confirmed against the live API 2026-06-22):
+
+    * Electricity rates return the short ``Ratetype`` lookup UploadCode
+      (``TOU``, ``CPP``, ``RTP``, …) — *not* the long Description.
+    * SGIP GHG returns the long Description ``Greenhouse Gas emissions``.
+    * Flex Alert returns the long Description ``Flex Alert``.
+
+    The field is a lenient passthrough, so any unmodelled label coerces to a
+    plain string rather than raising.
+    """
+
+    # Electricity rates — short Ratetype UploadCodes (v2.0 wire form).
+    TOU = "TOU"
+    CPP = "CPP"
+    RTP = "RTP"
+    VPP = "VPP"
+    DSR = "DSR"
+    V_D = "V-D"
+    C_D = "C-D"
+    R_D = "R-D"
+    T_D = "T-D"
+    # GHG and Flex Alert return long Descriptions, not short codes.
     GHG = "Greenhouse Gas emissions"
     FLEX_ALERT = "Flex Alert"
-    # v2.0 unified SGIP GHG signal (RIN segment-3 code MOER). The exact
-    # RateType wire label is pending live-API verification; the field is a
-    # lenient passthrough, so an unexpected label coerces to a plain string.
+    # v2.0 unified SGIP GHG signal (RIN segment-3 code MOER); retained for the
+    # Ratetype lookup UploadCode and any RIN whose RateType surfaces as "MOER".
     MOER = "MOER"
 
 

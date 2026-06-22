@@ -1,62 +1,56 @@
-# python-midas — MIDAS v2.0 migration
+# python-midas — upgrading from v1.0 to v2.0
 
-The California Energy Commission is releasing **MIDAS v2.0 on 2026-06-22**, a breaking change to the live API. v1.0 disappears from the live service on that date, so python-midas ships a **v2-only release, `1.0.0`** (major bump — v1.0-only consumers break). This document maps each spec-level change to the specific python-midas module and function that changes, and records what is staged ahead of release versus what must wait for the live v2.0 API.
+python-midas `1.0.0` tracks the California Energy Commission's **MIDAS v2.0** API (live 2026-06-22), a breaking change. v1.0 was removed from the live service that day, so `1.0.0` is a **v2-only release** — there is no v1.0 compatibility mode. This guide is what a v0.x consumer needs to upgrade.
 
-For the spec-level delta (schemas, OpenAPI paths, JSON fields) see the upstream reference [`midas-api-specs/doc/v2-migration.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/v2-migration.md). For datetime semantics see [`midas-api-specs/doc/datetime-and-timezone.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/datetime-and-timezone.md). All six pre-release open questions were resolved by the CEC MIDAS team on 2026-06-12, so the v2.0 behavior is fully specified; only a live smoke-test per signal type remains for release day (cutover runs 9–11 am Pacific — gate verification on the CEC's "transition complete" email).
+python-midas is a **read-only consumer client**. In v2.0 all public GET endpoints are unauthenticated, so you need **no credentials** — just `create_anonymous_client()`. The authenticated constructors (`create_client` / `create_auto_client`) exist only for utilities that *upload* rate data to the CEC; that path requires CEC-issued utility credentials and is not exercised by this project.
 
-## Target
+## What changed (and what to do)
 
-- **Version:** `python-midas 1.0.0` (was 0.1.x). Not published before release day.
-- **Branch:** breaking work lands on the `v2` branch, merged to `main` on release day.
-- **No bundled spec:** unlike clj-midas (which derives routes from a vendored OpenAPI spec via Martian), python-midas issues hand-written `httpx` calls, so every endpoint/shape change is a targeted edit in `midas.client` or `midas.entities` — there is no spec swap that propagates changes automatically.
+| v1.0 | v2.0 | What you do |
+|---|---|---|
+| Token required for reads | GET endpoints are unauthenticated | Use `create_anonymous_client()` — no username/password |
+| RIN list is a bare array | Keyed object, **always** `{"Rates": [...]}` (regardless of `SignalType`) | Nothing — `rin_list` / `coerce_rin_list` peel it for you |
+| Lookup table is a bare array | Keyed object `{"table_name": …, "data": [...]}` | Nothing — `lookup_table` / `coerce_lookup_table` peel `data`; `LookupEntry` gains optional `payload_descriptor` / `unit_type` |
+| Interval price field `value` | `Value` (capital V) | Nothing — `ValueData.from_raw` follows |
+| `RateType` long-form only | Electricity rates send the short `UploadCode` (`"TOU"`); GHG/Flex send the long Description | Update any `== RateType.TOU` checks — the enum now uses short codes for electricity (`TOU`, `CPP`, …); `RateType.GHG` / `FLEX_ALERT` keep the long Descriptions |
+| GHG in `kg/kWh CO2` | `g/kWh CO2` (values **1000× larger**) | Recompute any cross-boundary comparisons; `Unit.G_CO2_PER_KWH` is the new unit (`KG_CO2_PER_KWH` kept for archives); `MIDASClient.ghg()` recognises both |
+| GHG/Flex `SignalType` was `null` | Always populated (long-form labels) | Nothing — `SignalType` enum recognises them |
+| `ValueInformation` bare datetimes were PT for some signals | **UTC for every signal type** | Read `ValueData.period` (a zone-aware `(start, end)` tuple); the zone-naive `date_start`/`date_end`/`time_start`/`time_end` fields are **removed** |
+| `LastUpdated` was a bare wall-clock string | Carries a basic-format UTC offset, e.g. `"…+0000"` | Nothing — `parse_instant` accepts `+0000`, `+00:00`, and `Z` (absent on Flex entries → `None`) |
+| `GET /HistoricalData?id=` (query) | `GET /HistoricalData/{rate_id}` (path), 6-month max range per call | Nothing — the signature is unchanged: `historical_data(rin, start, end)`; a span over six months raises `ValueError` |
+| `GET /HistoricalList` | Removed | Use `rin_list(signal_type=0)` for the full active RIN list |
+| `GET /Holiday` (`get_holidays`) | **Retired** (absent from the CEC's published OpenAPI) | Remove any `get_holidays` / `holidays` calls. The `Holiday` *day-type* value in rate schedules (`DayType.HOLIDAY`) is unaffected |
 
-## Change map
+The two-layer data model is unchanged: every coerced entity still carries its original wire dict on `_raw`.
 
-Each row links a spec change to the python-midas code that implements it, and its status on the `v2` branch.
+## Notes on the data
 
-| Area | Spec change | python-midas change | Where | Status |
-|------|-------------|---------------------|-------|--------|
-| Value casing | wire field `value` → `Value` | Read `Value` in interval coercion | `ValueData.from_raw` | ✅ done |
-| RIN list shape | bare array → object keyed by signal type (`Rates`/`GHGEmissions`/`FlexAlerts`/`All`) | Peel the requested key; new `RinListResponse` model | `coerce_rin_list`, `RinListResponse`, `client.rin_list` | ✅ done |
-| Datetime | bare `ValueInformation` fields are **UTC for all signal types**; preserve honest wire zones | Zone-aware `pendulum.DateTime` everywhere; `ValueData.period` `(start, end)` tuple replaces naive date/time | `midas.time`, `ValueData`, `RateInfo`, `RinListEntry` | ✅ done |
-| Auth | GET endpoints become unauthenticated | Added `create_anonymous_client` (no token, GETs only) | `midas.client` | ✅ done (`python-midas-938`) |
-| HistoricalData | RIN moves query `?id=` → path `/HistoricalData/{rate_id}`; 6-month max range | Rewired `get_historical_data` / `historical_data` to the path-param URL; `ValueError` over 6 months | `midas.client` | ✅ done (`python-midas-8mh`) |
-| HistoricalList | endpoint removed | Removed `get_historical_list` / `historical_list` / `coerce_historical_list`; use `rin_list(0)` | `midas.client`, `midas.entities` | ✅ done (`python-midas-jfl`) |
-| Signal-type labels | `"Rates"`→`"Electricity Rates"`; GHG→`"Greenhouse Gas Emissions"`; Flex→`"California Independent System Operator Flex Alert"` | Updated `SignalType` enum values; `_parse_signal_type` maps them | `midas.enums`, `_parse_signal_type` | ✅ done (`python-midas-8ww`) |
-| Unit labels | GHG unit `"kg/kWh CO2"` → `"g/kWh CO2"` (values 1000× larger) | Added `G_CO2_PER_KWH`; kept `KG_CO2_PER_KWH` for archives; `ghg()` recognises both | `midas.enums`, `MIDASClient.ghg` | ✅ done (`python-midas-8ww`) |
-| Lookup tables | `Holiday` / `TimeZone` lookup tables removed | Standalone `/Holiday` (`get_holidays`) kept-for-now, retirement planned | `client.get_lookup_table` | ◐ partial (`python-midas-8ww`) |
+- **Consolidated GHG/Flex RINs.** v2.0 collapses the legacy SGIP GHG RINs into 11 `USCA-SGIP-MOER-{REGION}` RINs (the old BANC region code is now `P2`), and Flex Alerts into the single `USCA-FLEX-ALRT-0000`. Legacy RINs are retired.
+- **Pre-migration GHG history is not migrated.** A `MOER` RIN returns no data before 2026-06-22. The canonical source for older GHG history is the SGIP Signal bulk CSV (`content.sgipsignal.com/download-data`) or the WattTime API. Electricity-rate and Flex Alert history are unaffected.
+- **Window boundaries are still Pacific-aligned** but arrive as UTC on the wire (midnight Pacific = `07:00:00` UTC during PDT, `08:00:00` during PST). python-midas preserves the honest UTC instant on `ValueData.period`; convert with `period[0].in_tz("America/Los_Angeles")` (DST-correct).
+- **Sparse data during cutover week.** Utilities were still completing uploads the week of release, so some RINs return thin or no interval data — expected, not a client regression.
 
-## Detail — changes landed on the `v2` branch
+## Spec divergences found on the live API
 
-### Value casing — `value` → `Value`
+The release-day smoke-test surfaced places where the live v2.0 API diverges from the reverse-engineered [`midas-api-specs`](https://github.com/grid-coordination/midas-api-specs). Each is handled defensively in python-midas.
 
-`ValueData.from_raw` read the per-interval price from `raw.get("value")`; v2.0 sends `Value` (capital V), confirmed by the CEC. The coercion now reads `raw.get("Value")`. This is a rename, not additive — it requires v2 fixtures (the old v1 fixtures used lowercase `value`).
+The four `clj-midas` first found (now fixed on `midas-api-specs` `v2`), confirmed again here on the wire:
 
-### RIN list — peel the keyed object
+- RIN-list wrapper is always `Rates`, not keyed by signal type ([midas-api-specs#2](https://github.com/grid-coordination/midas-api-specs/issues/2)).
+- `RateType` is the `UploadCode` short code for electricity rates ([midas-api-specs#1](https://github.com/grid-coordination/midas-api-specs/issues/1)).
+- Lookup tables are `{table_name, data}` objects, not bare arrays ([midas-api-specs#3](https://github.com/grid-coordination/midas-api-specs/issues/3)).
+- `LastUpdated` is a basic-offset UTC timestamp (`+0000`) ([midas-api-specs#4](https://github.com/grid-coordination/midas-api-specs/issues/4)).
 
-v1.0 returned a bare array of RIN entries; v2.0 returns `{Rates|GHGEmissions|FlexAlerts|All: [...]}` keyed by the requested signal type (`SignalType=1/2/3/0` respectively). The new `RinListResponse` model (`midas.entities.models`) validates the keyed shape and peels the entry array; `coerce_rin_list(raw, signal_type)` selects the key for the requested signal type, falling back to whichever known key is present. `client.rin_list(signal_type)` threads its argument through, so the coerced return type is unchanged (`list[RinListEntry]`). The raw method `get_rin_list` is untouched (it returns the keyed body verbatim).
+Three further error-path divergences python-midas observed (pending upstream filing):
 
-### Datetime — zone-aware `pendulum.DateTime`, preserve the wire zone
+- Retired legacy RINs return **HTTP 404** `{"detail": "RIN not found"}`, not `410 Gone` as the migration notes state.
+- Retired lookup tables (`?LookupTable=Holiday`) return **HTTP 400** `{"detail": "Unsupported lookup table"}`, not `404`.
+- The standalone `/Holiday` endpoint returns **HTTP 401** `Not authenticated` (the route still exists, auth-gated) rather than being removed outright.
 
-This adopts the cross-library "every datetime is zone-aware; the consumer converts" discipline (shared with clj-midas and python-oa3), implemented the Python-idiomatic way:
+## References
 
-- **`pendulum.DateTime`** is the `ZonedDateTime` equivalent — it carries an IANA zone (DST-correct), not just a fixed offset.
-- The library **preserves the honest wire zone and never normalizes** to a display zone (matching python-oa3's "do not normalize" rule). `Z`-suffixed fields stay UTC; bare administrative fields are attached to `America/Los_Angeles`.
-- New module **`src/midas/time.py`**: `PendulumDateTime` (annotated Pydantic type — parses on input, serialises to ISO 8601 preserving the offset), `parse_instant` (zone-tagged fields), `parse_local` (bare PT fields), `parse_value_moment` (compose a UTC `ValueInformation` boundary), `MIDAS_ZONE = "America/Los_Angeles"`.
-- **`ValueData` drops** the four zone-naive fields `date_start`, `date_end`, `time_start`, `time_end` (`datetime.date` / `datetime.time`). Each interval is exposed as **`period: tuple[pendulum.DateTime, pendulum.DateTime] | None`** — a `(start, end)` pair composed from the v2.0 UTC wire date+time and kept in UTC (mirrors python-oa3's `IntervalPeriod.period`). A bare wall-clock time with no zone is ambiguous; the moments are self-describing. A consumer needing a wall-clock date/time derives it from a period endpoint (`period[0].in_tz("America/Los_Angeles").date()`).
-- `RateInfo.system_time` / `signup_close` use `parse_instant` (UTC, instant preserved); `RinListEntry.last_updated` uses `parse_local` (`America/Los_Angeles`, pending post-release re-verification per the spec doc).
-
-Window boundaries remain PT-aligned but arrive as UTC on the wire (midnight Pacific = `07:00:00` UTC during PDT, `08:00:00` during PST). The exact wire strings remain on each entity's `_raw`.
-
-### Auth, endpoints, enums
-
-- **`create_anonymous_client`** (`midas.client`): constructs a `MIDASClient` with no token and no `Authorization` header, for the now-unauthenticated v2.0 GET endpoints. `create_client` / `create_auto_client` stay for uploads.
-- **HistoricalData path param** (`get_historical_data` / `historical_data`): the RIN moved from the `?id=` query param to `/HistoricalData/{rin}`; `_check_historical_range` raises `ValueError` when the requested span exceeds the v2.0 6-month-per-call cap.
-- **HistoricalList removed** (`jfl`): `get_historical_list`, `historical_list`, and `coerce_historical_list` are deleted along with the `/HistoricalList` endpoint. The documented replacement is `rin_list(signal_type=0)`.
-- **Enums** (`midas.enums`): `SignalType` values are the v2.0 long-form labels (`RATES = "Electricity Rates"`, `GHG_EMISSIONS`, `FLEX_ALERT` = the CAISO label); `Unit` gains `G_CO2_PER_KWH = "g/kWh CO2"` (grams, 1000× the kg value) and keeps `KG_CO2_PER_KWH` for archives; `RateType` gains `MOER`. `MIDASClient.ghg()` recognises both GHG units and the MOER rate type. The `RateType.MOER` label and `LastUpdated`/`DateOfHoliday` zones still need a live check.
-
-## Release-day plan
-
-1. Wait for the CEC's "transition complete" email (cutover runs 9–11 am PT, likely before 11) or verify after ~11 am PT.
-2. Run the live integration suite against production per signal type: `MIDAS_USERNAME=… MIDAS_PASSWORD=… pytest -m integration`. Confirm `Value` casing, the keyed RIN-list shape, UTC `ValueInformation` boundaries, the `RateType` label for MOER RINs, the `/Holiday` endpoint's fate, and that `historicaldata` against a `MOER` RIN returns no pre-release data (per the spec's GHG-history caveat).
-3. Bump `pyproject.toml` to `1.0.0`, move the CHANGELOG `[Unreleased]` entries under the version, merge `v2` → `main`, tag `v1.0.0`, and let the Trusted Publisher workflow deploy to PyPI.
+- Upstream spec delta: [`midas-api-specs/doc/v2-migration.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/v2-migration.md)
+- Datetime semantics: [`midas-api-specs/doc/datetime-and-timezone.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/datetime-and-timezone.md)
+- RIN structure: [`midas-api-specs/doc/rin-structure.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/rin-structure.md)
+- Sibling client: [`clj-midas`](https://github.com/grid-coordination/clj-midas) (Clojure, same v2.0 posture)
+- CEC contact: <midas@energy.ca.gov>

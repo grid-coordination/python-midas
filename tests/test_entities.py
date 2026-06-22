@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import datetime
 from decimal import Decimal
 
 import pendulum
 
 from midas.entities import (
-    coerce_holidays,
     coerce_lookup_table,
     coerce_rate_info,
     coerce_rin_list,
@@ -23,30 +21,32 @@ from midas.enums import DayType, RateType, SignalType, Unit
 
 # -- Fixtures --
 
-# v2.0 wraps the RIN-list array under a SignalType-keyed object (here the
-# default SignalType=0 → "All"); v1.0 returned a bare array.
+# v2.0 wraps the RIN-list array in a single-keyed object whose key is always
+# "Rates" (regardless of SignalType); v1.0 returned a bare array. LastUpdated
+# is a UTC instant with a basic-format offset (+0000).
 RAW_RIN_LIST_ENTRIES = [
     {
         "RateID": "USCA-BNBN-EVT2-0000",
         "SignalType": "Electricity Rates",
         "Description": "Rate Data for Distributor: Banning, Energy Company: Banning",
-        "LastUpdated": "2021-07-14T14:31:55.653",
+        "LastUpdated": "2021-07-14T14:31:55+0000",
     },
     {
         "RateID": "USCA-LALA-TTOU-0000",
         "SignalType": "Electricity Rates",
         "Description": "Rate Data for Distributor: LADWP, Energy Company: LADWP",
-        "LastUpdated": "2023-06-07T15:57:48.023",
+        "LastUpdated": "2023-06-07T15:57:48+0000",
     },
 ]
 
-RAW_RIN_LIST = {"All": RAW_RIN_LIST_ENTRIES}
+RAW_RIN_LIST = {"Rates": RAW_RIN_LIST_ENTRIES}
 
 RAW_RATE_INFO = {
     "RateID": "USCA-TSTS-TTOU-TEST",
     "SystemTime_UTC": "2026-03-19T10:03:46.379Z",
     "RateName": "CEC TEST24HTOU",
-    "RateType": "Time of use",
+    # v2.0: electricity rates return the short Ratetype UploadCode, not "Time of use".
+    "RateType": "TOU",
     "Sector": "All sectors",
     "EndUse": "All",
     "API_Url": "None",
@@ -81,10 +81,11 @@ RAW_RATE_INFO = {
 }
 
 RAW_FLEX_ALERT = {
-    "RateID": "USCA-FLEX-FXRT-0000",
+    "RateID": "USCA-FLEX-ALRT-0000",
     "SystemTime_UTC": "2026-03-19T10:11:11.2455221Z",
-    "RateName": "Realtime Flex Alert Status",
-    "RateType": None,
+    "RateName": "Flex Alert Status",
+    # v2.0: Flex Alert returns the long Description, not a short code.
+    "RateType": "Flex Alert",
     "Sector": None,
     "API_Url": "https://example.com/flex",
     "RatePlan_Url": None,
@@ -107,25 +108,20 @@ RAW_FLEX_ALERT = {
     ],
 }
 
-RAW_HOLIDAYS = [
-    {
-        "EnergyCode": "SD",
-        "EnergyDescription": "San Diego Gas and Electric",
-        "DateOfHoliday": "2023-02-20T00:00:00",
-        "HolidayDescription": "President's Day",
-    },
-    {
-        "EnergyCode": "PG",
-        "EnergyDescription": "Pacific Gas and Electric",
-        "DateOfHoliday": "2023-12-25T00:00:00",
-        "HolidayDescription": "Christmas 2023",
-    },
-]
-
-RAW_LOOKUP_TABLE = [
-    {"UploadCode": "PG", "Description": "Pacific Gas and Electric"},
-    {"UploadCode": "MC", "Description": "Marin Clean Energy"},
-]
+# v2.0 wraps lookup rows in {table_name, data: [...]}; v1.0 returned a bare
+# array. The Unit table carries extra PayloadDescriptor/UnitType columns.
+RAW_LOOKUP_TABLE = {
+    "table_name": "Unit",
+    "data": [
+        {
+            "UploadCode": "backup $/kWh",
+            "Description": "Dollars per kilowatt-hour for backup energy",
+            "PayloadDescriptor": "BACKUP_PRICE",
+            "UnitType": "KWH",
+        },
+        {"UploadCode": "¢/kWh", "Description": "Cents per Kilowatt-hour"},
+    ],
+}
 
 
 # -- v2.0 enum coverage --
@@ -173,18 +169,20 @@ def test_rin_list_raw_preserved():
     assert result[0]._raw == RAW_RIN_LIST_ENTRIES[0]
 
 
-def test_coerce_rin_list_keyed_by_signal_type():
-    """v2.0 peels the entry array from the SignalType-specific key."""
-    for signal_type, key in [
-        (0, "All"),
-        (1, "Rates"),
-        (2, "GHGEmissions"),
-        (3, "FlexAlerts"),
-    ]:
-        raw = {key: RAW_RIN_LIST_ENTRIES}
+def test_coerce_rin_list_always_rates_key():
+    """v2.0 peels the entry array from "Rates" for every SignalType."""
+    for signal_type in (0, 1, 2, 3):
+        raw = {"Rates": RAW_RIN_LIST_ENTRIES}
         result = coerce_rin_list(raw, signal_type)
         assert len(result) == 2
         assert result[0].id == "USCA-BNBN-EVT2-0000"
+
+
+def test_coerce_rin_list_unexpected_key_fallback():
+    """An unexpected wrapper key still peels via the first-list fallback."""
+    result = coerce_rin_list({"GHGEmissions": RAW_RIN_LIST_ENTRIES}, signal_type=2)
+    assert len(result) == 2
+    assert result[0].id == "USCA-BNBN-EVT2-0000"
 
 
 def test_coerce_rin_list_empty_key():
@@ -246,8 +244,8 @@ def test_rate_info_raw_preserved():
 
 def test_coerce_flex_alert():
     rate = coerce_rate_info(RAW_FLEX_ALERT)
-    assert rate.id == "USCA-FLEX-FXRT-0000"
-    assert rate.type is None  # RateType is null for Flex Alert
+    assert rate.id == "USCA-FLEX-ALRT-0000"
+    assert rate.type == RateType.FLEX_ALERT  # long Description on the wire
     assert rate.values[0].unit == Unit.EVENT
     assert rate.values[0].value == Decimal("0.0")
 
@@ -263,45 +261,40 @@ def test_flex_alert_period_time_without_seconds():
     assert end == pendulum.parse("2026-03-19T03:11:00", tz="UTC")
 
 
-def test_rin_last_updated_is_pacific_local():
-    # Bare administrative field — attached to America/Los_Angeles wall-clock.
+def test_rin_last_updated_is_utc():
+    # v2.0: UTC instant with a basic-format offset (+0000); the explicit offset
+    # is honoured (no Pacific-local shift).
     result = coerce_rin_list(RAW_RIN_LIST)
     lu = result[0].last_updated
     assert lu is not None
-    assert lu.timezone_name == "America/Los_Angeles"
+    assert lu.utcoffset().total_seconds() == 0
     assert (lu.year, lu.month, lu.day, lu.hour) == (2021, 7, 14, 14)
-
-
-# -- Holiday tests --
-
-
-def test_coerce_holidays():
-    result = coerce_holidays(RAW_HOLIDAYS)
-    assert len(result) == 2
-
-    h0 = result[0]
-    assert h0.energy_code == "SD"
-    assert h0.energy_name == "San Diego Gas and Electric"
-    assert h0.date == datetime.date(2023, 2, 20)
-    assert h0.description == "President's Day"
-
-
-def test_holiday_raw_preserved():
-    result = coerce_holidays(RAW_HOLIDAYS)
-    assert result[1]._raw == RAW_HOLIDAYS[1]
 
 
 # -- Lookup table tests --
 
 
 def test_coerce_lookup_table():
+    # v2.0 keyed object {table_name, data: [...]} is peeled to a flat list.
     result = coerce_lookup_table(RAW_LOOKUP_TABLE)
     assert len(result) == 2
+    assert result[0].code == "backup $/kWh"
+    assert result[0].description == "Dollars per kilowatt-hour for backup energy"
+    # Extra Unit-table columns surface as optional fields.
+    assert result[0].payload_descriptor == "BACKUP_PRICE"
+    assert result[0].unit_type == "KWH"
+    # Rows without the extra columns leave them None.
+    assert result[1].code == "¢/kWh"
+    assert result[1].payload_descriptor is None
+
+
+def test_coerce_lookup_table_bare_list_tolerated():
+    # A bare list (legacy/defensive) still coerces.
+    result = coerce_lookup_table([{"UploadCode": "PG", "Description": "PG&E"}])
+    assert len(result) == 1
     assert result[0].code == "PG"
-    assert result[0].description == "Pacific Gas and Electric"
-    assert result[1].code == "MC"
 
 
 def test_lookup_raw_preserved():
     result = coerce_lookup_table(RAW_LOOKUP_TABLE)
-    assert result[0]._raw == RAW_LOOKUP_TABLE[0]
+    assert result[0]._raw == RAW_LOOKUP_TABLE["data"][0]

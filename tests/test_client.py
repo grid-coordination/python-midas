@@ -9,23 +9,24 @@ from midas.enums import RateType, SignalType, Unit
 
 # -- Fixtures --
 
-# v2.0 wraps the RIN-list array under a SignalType-keyed object.
+# v2.0 wraps the RIN-list array in a single-keyed object (always "Rates").
 MOCK_RIN_LIST_ENTRIES = [
     {
         "RateID": "USCA-TSTS-TTOU-TEST",
         "SignalType": "Electricity Rates",
         "Description": "Test rate",
-        "LastUpdated": "2023-06-07T15:57:48.023",
+        "LastUpdated": "2023-06-07T15:57:48+0000",
     },
 ]
 
-MOCK_RIN_LIST = {"All": MOCK_RIN_LIST_ENTRIES}
+MOCK_RIN_LIST = {"Rates": MOCK_RIN_LIST_ENTRIES}
 
 MOCK_RATE_INFO = {
     "RateID": "USCA-TSTS-TTOU-TEST",
     "SystemTime_UTC": "2026-03-19T10:03:46.379Z",
     "RateName": "CEC TEST24HTOU",
-    "RateType": "Time of use",
+    # v2.0: electricity rates return the short Ratetype UploadCode.
+    "RateType": "TOU",
     "Sector": "All sectors",
     "EndUse": "All",
     "API_Url": "None",
@@ -48,18 +49,11 @@ MOCK_RATE_INFO = {
     ],
 }
 
-MOCK_HOLIDAYS = [
-    {
-        "EnergyCode": "PG",
-        "EnergyDescription": "Pacific Gas and Electric",
-        "DateOfHoliday": "2023-12-25T00:00:00",
-        "HolidayDescription": "Christmas 2023",
-    },
-]
-
-MOCK_LOOKUP = [
-    {"UploadCode": "PG", "Description": "Pacific Gas and Electric"},
-]
+# v2.0 wraps lookup rows in {table_name, data: [...]}.
+MOCK_LOOKUP = {
+    "table_name": "Energy",
+    "data": [{"UploadCode": "PG", "Description": "Pacific Gas and Electric"}],
+}
 
 BASE_URL = "https://midasapi.energy.ca.gov/api"
 
@@ -87,17 +81,6 @@ def test_get_rate_values_raw(httpx_mock):
         resp = client.get_rate_values("USCA-TSTS-TTOU-TEST")
         assert success(resp)
         assert resp.json()["RateID"] == "USCA-TSTS-TTOU-TEST"
-
-
-def test_get_holidays_raw(httpx_mock):
-    httpx_mock.add_response(
-        url=f"{BASE_URL}/Holiday",
-        json=MOCK_HOLIDAYS,
-    )
-    with MIDASClient(token="fake") as client:
-        resp = client.get_holidays()
-        assert success(resp)
-        assert len(resp.json()) == 1
 
 
 def test_get_lookup_table_raw(httpx_mock):
@@ -157,17 +140,6 @@ def test_rate_values_coerced(httpx_mock):
         assert rate.type == RateType.TOU
         assert len(rate.values) == 1
         assert rate.values[0].unit == Unit.DOLLAR_PER_KWH
-
-
-def test_holidays_coerced(httpx_mock):
-    httpx_mock.add_response(
-        url=f"{BASE_URL}/Holiday",
-        json=MOCK_HOLIDAYS,
-    )
-    with MIDASClient(token="fake") as client:
-        holidays = client.holidays()
-        assert len(holidays) == 1
-        assert holidays[0].energy_code == "PG"
 
 
 def test_lookup_table_coerced(httpx_mock):
@@ -241,7 +213,7 @@ def test_ghg_detection_v2_moer_grams():
 def test_anonymous_client_sends_no_auth(httpx_mock):
     httpx_mock.add_response(
         url=f"{BASE_URL}/ValueData?SignalType=0",
-        json={"All": MOCK_RIN_LIST_ENTRIES},
+        json={"Rates": MOCK_RIN_LIST_ENTRIES},
     )
     with create_anonymous_client() as client:
         client.rin_list(signal_type=0)
@@ -253,9 +225,9 @@ def test_flex_alert_inactive():
     from midas.entities.models import RateInfo
 
     raw = {
-        "RateID": "USCA-FLEX-FXRT-0000",
-        "RateName": "Flex Alert",
-        "RateType": None,
+        "RateID": "USCA-FLEX-ALRT-0000",
+        "RateName": "Flex Alert Status",
+        "RateType": "Flex Alert",
         "ValueInformation": [
             {
                 "ValueName": "No Active Flex Alert",
@@ -279,9 +251,9 @@ def test_flex_alert_active():
     from midas.entities.models import RateInfo
 
     raw = {
-        "RateID": "USCA-FLEX-FXRT-0000",
-        "RateName": "Flex Alert",
-        "RateType": None,
+        "RateID": "USCA-FLEX-ALRT-0000",
+        "RateName": "Flex Alert Status",
+        "RateType": "Flex Alert",
         "ValueInformation": [
             {
                 "ValueName": "Active Flex Alert",

@@ -11,14 +11,13 @@ from midas.client import (
     success,
 )
 from midas.entities import (
-    coerce_holidays,
     coerce_lookup_table,
     coerce_rate_info,
     coerce_rin_list,
 )
 from midas.entities.models import (
-    Holiday,
     LookupEntry,
+    LookupTableResponse,
     MIDASBase,
     RateInfo,
     RinListEntry,
@@ -52,7 +51,6 @@ __all__ = [
     # Entity coercion
     "coerce_rate_info",
     "coerce_rin_list",
-    "coerce_holidays",
     "coerce_lookup_table",
     # Entity models
     "MIDASBase",
@@ -60,8 +58,8 @@ __all__ = [
     "ValueData",
     "RinListEntry",
     "RinListResponse",
-    "Holiday",
     "LookupEntry",
+    "LookupTableResponse",
     # Enums
     "SignalType",
     "RateType",

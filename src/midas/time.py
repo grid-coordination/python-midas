@@ -9,8 +9,12 @@ ones (see ``midas-api-specs/doc/datetime-and-timezone.md``):
   ``TimeEnd`` are **UTC** in v2.0, for every signal type (v1.0 delivered SGIP
   GHG and Flex Alert in Pacific Time — an upstream-provider bug the CEC fixed
   in v2.0 by converting to UTC before delivery).
-* Bare ``LastUpdated`` / ``DateOfHoliday`` are ``America/Los_Angeles`` local
-  (administrative timestamps; to be re-verified after the v2.0 release).
+* ``LastUpdated`` (RIN-list entries) is a UTC instant carrying a **basic-format
+  offset** (``±HHMM``, e.g. ``+0000``) in v2.0 — confirmed against the live API
+  2026-06-22, resolving the v1.0 bare/zoneless form. It is self-describing, so
+  it is parsed with :func:`parse_instant` (pendulum honours the explicit offset;
+  a naive fallback is treated as UTC). Note the ``+0000`` form is ISO 8601 but
+  not strict RFC 3339; pendulum accepts ``+0000``, ``+00:00``, and ``Z``.
 
 Discipline (shared with ``python-oa3`` and ``clj-midas``): every coerced
 datetime is a zone-aware ``pendulum.DateTime``. This library **preserves** the

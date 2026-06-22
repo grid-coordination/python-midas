@@ -9,13 +9,11 @@ import pendulum
 
 from midas.auth import AutoTokenAuth, BearerAuth, get_token
 from midas.entities import (
-    coerce_holidays,
     coerce_lookup_table,
     coerce_rate_info,
     coerce_rin_list,
 )
 from midas.entities.models import (
-    Holiday,
     LookupEntry,
     RateInfo,
     RinListEntry,
@@ -93,10 +91,6 @@ class MIDASClient:
         """Fetch a MIDAS lookup/reference table."""
         return self._http.get("/ValueData", params={"LookupTable": table_name})
 
-    def get_holidays(self) -> httpx.Response:
-        """Fetch all utility holidays."""
-        return self._http.get("/Holiday")
-
     def get_historical_data(
         self, rin: str, start_date: str, end_date: str
     ) -> httpx.Response:
@@ -130,12 +124,6 @@ class MIDASClient:
         resp = self.get_lookup_table(table_name)
         resp.raise_for_status()
         return coerce_lookup_table(resp.json())
-
-    def holidays(self) -> list[Holiday]:
-        """Fetch and coerce holidays."""
-        resp = self.get_holidays()
-        resp.raise_for_status()
-        return coerce_holidays(resp.json())
 
     def historical_data(self, rin: str, start_date: str, end_date: str) -> RateInfo:
         """Fetch and coerce historical rate data."""
@@ -197,10 +185,11 @@ def create_auto_client(
 def create_anonymous_client(url: str = API_URL) -> MIDASClient:
     """Create an unauthenticated client for v2.0 GET endpoints (no token).
 
-    v2.0 makes all public GET endpoints (rate values, RIN list, holidays,
-    historical data) unauthenticated, so no token is acquired and no
-    ``Authorization`` header is sent. Use ``create_client`` /
-    ``create_auto_client`` for the upload (POST) flows that still require a
-    bearer token.
+    This is the default, supported access mode for this read-only consumer
+    library: v2.0 makes all public GET endpoints (rate values, RIN list, lookup
+    tables, historical data) unauthenticated, so no token is acquired and no
+    ``Authorization`` header is sent. ``create_client`` / ``create_auto_client``
+    exist only for utilities that *upload* rate data to the CEC (POST); that
+    path requires CEC-issued utility credentials and is not exercised here.
     """
     return MIDASClient(base_url=url)
