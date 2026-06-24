@@ -48,9 +48,20 @@ ruff check src/ tests/                      # lint
 ruff format --check src/ tests/             # format check (drop --check to apply)
 ```
 
+### Pre-commit hooks
+
+This project uses [pre-commit](https://pre-commit.com/) to run Ruff lint and format checks automatically on every commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+The hooks are configured in `.pre-commit-config.yaml` (Ruff lint with `--fix`, then Ruff format). The same Ruff checks are enforced in CI via `.github/workflows/ci.yml`.
+
 ### Time and timezones
 
-Every coerced datetime is a zone-aware `pendulum.DateTime`, and the library **preserves the honest wire zone** rather than normalizing to one display zone: `Z`-suffixed fields (`SystemTime_UTC`, `SignupCloseDate`) stay UTC; bare administrative fields (`LastUpdated`) are `America/Los_Angeles` local; `ValueData` interval boundaries are exposed as a `period` `(start, end)` tuple composed from the v2.0 UTC wire and kept in UTC. Convert to a zone of your choice yourself with `.in_tz(...)`. The parsing rules live in `src/midas/time.py`; the wire-level semantics they encode are documented in [`midas-api-specs/doc/datetime-and-timezone.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/datetime-and-timezone.md). When changing time handling, keep the "know the zone, convert it yourself" contract intact.
+Every coerced datetime is a zone-aware `pendulum.DateTime`, and the library **preserves the honest wire zone** rather than normalizing to one display zone: `Z`-suffixed fields (`SystemTime_UTC`, `SignupCloseDate`) stay UTC, as does `LastUpdated` (a basic-offset `+0000` UTC instant in v2.0); `ValueData` interval boundaries are exposed as a `period` `(start, end)` tuple composed from the v2.0 UTC wire and kept in UTC. Convert to a zone of your choice yourself with `.in_tz(...)`. The parsing rules live in `src/midas/time.py`; the wire-level semantics they encode are documented in [`midas-api-specs/doc/datetime-and-timezone.md`](https://github.com/grid-coordination/midas-api-specs/blob/main/doc/datetime-and-timezone.md). When changing time handling, keep the "know the zone, convert it yourself" contract intact.
 
 ### Integration tests
 
