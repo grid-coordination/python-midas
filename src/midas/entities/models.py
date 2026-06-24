@@ -38,13 +38,10 @@ def _parse_decimal(n: int | float | None) -> Decimal | None:
     return Decimal(str(n))
 
 
-def _parse_day_type(s: str | None) -> DayType | None:
-    if not s:
-        return None
-    try:
-        return DayType(s)
-    except ValueError:
-        return None
+def _parse_day_type(v: object) -> DayType | None:
+    # v2.0 MOER/ALRT send an integer code (1=Mon..8=Holiday); v1.0/electricity
+    # send a weekday string. DayType.from_wire accepts both.
+    return DayType.from_wire(v)
 
 
 def _parse_unit(s: str | None) -> Unit | str | None:
@@ -114,6 +111,8 @@ class RateInfo(MIDASBase):
     id: str | None = None
     system_time: PendulumDateTime = None
     name: str | None = None
+    signal_type: SignalType | None = None
+    description: str | None = None
     type: RateType | str | None = None
     sector: str | None = None
     end_use: str | None = None
@@ -137,6 +136,10 @@ class RateInfo(MIDASBase):
             id=raw.get("RateID"),
             system_time=parse_instant(raw.get("SystemTime_UTC")),
             name=raw.get("RateName"),
+            # v2.0 rate-values responses carry the per-RIN SignalType label and
+            # Description at the top level (as in the RIN list).
+            signal_type=_parse_signal_type(raw.get("SignalType")),
+            description=raw.get("Description"),
             type=_parse_rate_type(raw.get("RateType")),
             sector=raw.get("Sector"),
             end_use=raw.get("EndUse"),

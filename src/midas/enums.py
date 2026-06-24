@@ -71,3 +71,41 @@ class DayType(str, Enum):
     SATURDAY = "Saturday"
     SUNDAY = "Sunday"
     HOLIDAY = "Holiday"
+
+    @classmethod
+    def from_wire(cls, v: object) -> "DayType | None":
+        """Coerce a wire day-type value to a DayType, or None if unmappable.
+
+        v2.0 SGIP GHG (MOER) and Flex Alert (ALRT) responses encode the day
+        type as an INTEGER upload code (1=Monday ... 7=Sunday, 8=Holiday); v1.0
+        and electricity rates use the weekday string ("Monday"). Both forms are
+        accepted (a digit string such as "1" is treated as the integer code).
+        """
+        if isinstance(v, bool) or v is None:
+            return None
+        if isinstance(v, int):
+            return _DAY_TYPE_BY_CODE.get(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            if s.isdigit():
+                return _DAY_TYPE_BY_CODE.get(int(s))
+            try:
+                return cls(s)
+            except ValueError:
+                return None
+        return None
+
+
+#: v2.0 integer day-type upload codes (1=Monday ... 7=Sunday, 8=Holiday).
+_DAY_TYPE_BY_CODE: dict[int, DayType] = {
+    1: DayType.MONDAY,
+    2: DayType.TUESDAY,
+    3: DayType.WEDNESDAY,
+    4: DayType.THURSDAY,
+    5: DayType.FRIDAY,
+    6: DayType.SATURDAY,
+    7: DayType.SUNDAY,
+    8: DayType.HOLIDAY,
+}

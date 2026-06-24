@@ -16,14 +16,26 @@ paths; thin/absent data on a given RIN is expected this week, not a regression.
 
 from __future__ import annotations
 
+import json
+import os
 from decimal import Decimal
+from pathlib import Path
 
 import httpx
 import pendulum
 import pytest
 
+try:
+    import jsonschema
+    from referencing import Registry, Resource
+
+    _HAVE_JSONSCHEMA = True
+except ImportError:  # pragma: no cover - dev extra not installed
+    _HAVE_JSONSCHEMA = False
+
 from midas import (
     MIDASClient,
+    DayType,
     RateInfo,
     RinListEntry,
     LookupEntry,
@@ -138,6 +150,10 @@ class TestRateValues:
         rin = _first_ghg_rin(client)
         rate = client.rate_values(rin, query_type="realtime")
         assert len(rate.values) > 0
+        # v2.0 surfaces the per-RIN SignalType label and Description at the top
+        # level of a rate-values response.
+        assert rate.signal_type == SignalType.GHG_EMISSIONS
+        assert rate.description is not None
 
         v = rate.values[0]
         assert isinstance(v, ValueData)
@@ -152,6 +168,10 @@ class TestRateValues:
         assert start <= end
         assert isinstance(v.value, Decimal)
         assert v.unit is not None
+        # MOER sends integer day-type codes (1=Mon..8=Holiday); they must coerce
+        # to DayType, not silently drop to None (regression: python-midas-ib9).
+        assert v.day_start in DayType.__members__.values()
+        assert v.day_end in DayType.__members__.values()
 
     def test_realtime_query(self, client: MIDASClient):
         rate = client.rate_values(TOU_TEST_RIN, query_type="realtime")
@@ -170,6 +190,8 @@ class TestFlexAlert:
         assert client.flex_alert(rate) is True
         assert len(rate.values) > 0
         assert rate.values[0].unit == Unit.EVENT
+        # ALRT also sends integer day-types; confirm they coerce.
+        assert rate.values[0].day_start in DayType.__members__.values()
 
     def test_flex_alert_active_type(self, client: MIDASClient):
         rate = client.rate_values(FLEX_RIN)
@@ -251,7 +273,85 @@ class TestGHG:
 class TestRetiredRins:
     def test_legacy_flex_rin_errors(self, client: MIDASClient):
         # Legacy SGIP/Flex RINs are retired in v2.0. The live API returns
-        # HTTP 404 ("RIN not found") — note: NOT 410 Gone as the migration
-        # notes state (filed as a midas-api-specs discrepancy).
+        # HTTP 404 ("RIN not found"), not 410 Gone as the migration notes
+        # state (filed as a midas-api-specs discrepancy).
         resp = client.get_rate_values(LEGACY_FLEX_RIN)
         assert resp.status_code == 404
+
+
+# -- Strict wire-contract validation --
+#
+# The endpoint tests above assert on the lenient coerced model, which by design
+# tolerates drift (extra='ignore', lenient day-type/rate-type passthrough). That
+# leniency is correct for production but masks wire changes: it is how the
+# integer-day-type bug (python-midas-ib9) shipped undetected. These tests
+# validate the RAW response JSON against the authoritative midas-api-specs JSON
+# Schemas, so any divergence from the documented wire contract (an unmodeled
+# field, a wrong day-type encoding) fails the suite.
+
+
+def _specs_schema_dir() -> Path | None:
+    """Locate the midas-api-specs value-data schema directory.
+
+    Honours MIDAS_SPECS_DIR (the midas-api-specs checkout root); otherwise
+    falls back to a sibling checkout next to this repo. Returns None if not
+    found, so the strict tests skip rather than fail off a missing sibling.
+    """
+    candidates = []
+    env = os.environ.get("MIDAS_SPECS_DIR")
+    if env:
+        candidates.append(Path(env) / "apis" / "value-data" / "schemas")
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates.append(
+        repo_root.parent / "midas-api-specs" / "apis" / "value-data" / "schemas"
+    )
+    return next((c for c in candidates if c.is_dir()), None)
+
+
+def _validator(schema_filename: str):
+    """Build a Draft 2020-12 validator for one schema, with a registry that
+    resolves the sibling ``*.schema.json`` ``$ref`` files by their ``$id``."""
+    schema_dir = _specs_schema_dir()
+    if schema_dir is None:
+        return None
+    resources = []
+    for path in schema_dir.glob("*.schema.json"):
+        contents = json.loads(path.read_text())
+        resources.append(
+            (contents.get("$id", path.name), Resource.from_contents(contents))
+        )
+    registry = Registry().with_resources(resources)
+    root = json.loads((schema_dir / schema_filename).read_text())
+    return jsonschema.Draft202012Validator(root, registry=registry)
+
+
+@pytest.mark.skipif(not _HAVE_JSONSCHEMA, reason="jsonschema dev extra not installed")
+class TestWireContract:
+    def _assert_valid(self, schema_filename: str, payload) -> None:
+        validator = _validator(schema_filename)
+        if validator is None:
+            pytest.skip(
+                "midas-api-specs schemas not found; set MIDAS_SPECS_DIR to the "
+                "midas-api-specs checkout to enable strict wire-contract checks"
+            )
+        errors = sorted(validator.iter_errors(payload), key=lambda e: list(e.path))
+        assert not errors, "wire diverges from midas-api-specs:\n" + "\n".join(
+            f"  {list(e.absolute_path)}: {e.message}" for e in errors
+        )
+
+    def test_moer_rate_values_matches_schema(self, client: MIDASClient):
+        rin = _first_ghg_rin(client)
+        raw = client.get_rate_values(rin, query_type="realtime").json()
+        self._assert_valid("midas-rate-info.schema.json", raw)
+
+    def test_flex_rate_values_matches_schema(self, client: MIDASClient):
+        raw = client.get_rate_values(FLEX_RIN).json()
+        self._assert_valid("midas-rate-info.schema.json", raw)
+
+    def test_rin_list_matches_schema(self, client: MIDASClient):
+        raw = client.get_rin_list(signal_type=2).json()
+        self._assert_valid("midas-rin-list-response.schema.json", raw)
+
+    def test_unit_lookup_matches_schema(self, client: MIDASClient):
+        raw = client.get_lookup_table("Unit").json()
+        self._assert_valid("midas-lookup-table-response.schema.json", raw)

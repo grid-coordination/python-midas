@@ -12,6 +12,7 @@ from midas.entities import (
     coerce_rin_list,
 )
 from midas.entities.models import (
+    _parse_day_type,
     _parse_rate_type,
     _parse_signal_type,
     _parse_unit,
@@ -149,6 +150,23 @@ def test_rate_type_moer_parses():
     assert _parse_rate_type("Some Future Type") == "Some Future Type"
 
 
+def test_day_type_integer_codes_parse():
+    # v2.0 MOER/ALRT send integer day-type codes (1=Mon..7=Sun, 8=Holiday).
+    assert _parse_day_type(1) == DayType.MONDAY
+    assert _parse_day_type(7) == DayType.SUNDAY
+    assert _parse_day_type(8) == DayType.HOLIDAY
+    # Digit strings are treated as the integer code.
+    assert _parse_day_type("3") == DayType.WEDNESDAY
+    # v1.0 / electricity weekday strings still parse.
+    assert _parse_day_type("Monday") == DayType.MONDAY
+    # Out-of-range, empty, None, and junk coerce to None (not an error).
+    assert _parse_day_type(0) is None
+    assert _parse_day_type(9) is None
+    assert _parse_day_type(None) is None
+    assert _parse_day_type("") is None
+    assert _parse_day_type("Funday") is None
+
+
 # -- RIN List tests --
 
 
@@ -237,6 +255,47 @@ def test_rate_info_raw_preserved():
     rate = coerce_rate_info(RAW_RATE_INFO)
     assert rate._raw == RAW_RATE_INFO
     assert rate.values[0]._raw == RAW_RATE_INFO["ValueInformation"][0]
+
+
+# v2.0 MOER/ALRT rate-values shape: top-level SignalType/Description, and
+# integer day-type codes in ValueInformation.
+RAW_MOER_RATE = {
+    "RateID": "USCA-SGIP-MOER-PGE",
+    "SystemTime_UTC": "2026-06-23T03:34:50.858999Z",
+    "RateName": "SGIP_CAISO_PGE Realtime GHG Emissions",
+    "RateType": "Greenhouse Gas emissions",
+    "SignalType": "Greenhouse Gas Emissions",
+    "Description": "SGIP_CAISO_PGE Realtime GHG Emissions - Greenhouse Gas emissions",
+    "ValueInformation": [
+        {
+            "ValueName": "Realtime SGIP GHG Emission",
+            "DateStart": "2026-06-22",
+            "DateEnd": "2026-06-22",
+            "DayStart": 1,
+            "DayEnd": 1,
+            "TimeStart": "07:00:00",
+            "TimeEnd": "07:04:59",
+            "Unit": "g/kWh CO2",
+            "Value": 643.19,
+        }
+    ],
+}
+
+
+def test_rate_info_surfaces_signal_type_and_description():
+    # v2.0 carries the per-RIN SignalType label and Description at the top level.
+    rate = coerce_rate_info(RAW_MOER_RATE)
+    assert rate.signal_type == SignalType.GHG_EMISSIONS
+    assert rate.description == RAW_MOER_RATE["Description"]
+
+
+def test_rate_info_integer_day_types_not_dropped():
+    # Integer DayStart/DayEnd must coerce, not silently become None
+    # (regression: python-midas-ib9).
+    rate = coerce_rate_info(RAW_MOER_RATE)
+    v = rate.values[0]
+    assert v.day_start == DayType.MONDAY
+    assert v.day_end == DayType.MONDAY
 
 
 # -- Flex Alert tests --

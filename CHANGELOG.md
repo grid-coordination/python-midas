@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). While the library was in early development (0.x), breaking changes appeared between minor versions when needed to fix correctness issues or align with the MIDAS API. The 1.0.0 release tracks the California Energy Commission's MIDAS v2.0 API.
 
+## [1.0.1] - 2026-06-24
+
+Patch release. Regenerating the spec examples against the live API surfaced two wire-shape details the lenient client silently tolerated; both are now handled and guarded by tests.
+
+### Fixed
+
+- **Integer day-types are no longer dropped.** Live v2.0 SGIP GHG (MOER) and Flex Alert (ALRT) responses encode `DayStart` / `DayEnd` as integers (1=Monday through 7=Sunday, 8=Holiday: the upload-format code), where v1.0 returned weekday strings. `_parse_day_type` previously tried `DayType(value)` and returned `None` on the resulting `ValueError`, so every MOER/ALRT interval lost its `day_start` / `day_end`. `DayType.from_wire` now accepts the integer code, a digit string, or a weekday string; the electricity-rate wire form (unconfirmed pending utility-data migration) is covered by accepting both.
+
+### Added
+
+- **`RateInfo.signal_type` and `RateInfo.description`.** v2.0 rate-values responses carry the per-RIN `SignalType` label and `Description` at the top level (as in the RIN list); these are now surfaced on the entity instead of being silently ignored.
+- **Strict wire-contract validation in the integration suite.** New `TestWireContract` validates raw live responses against the `midas-api-specs` JSON Schemas (via `jsonschema`), and the coerced tests now assert day-type values, so future wire drift fails the suite rather than being absorbed by the lenient runtime models. Point `MIDAS_SPECS_DIR` at a `midas-api-specs` checkout to enable the schema checks (they skip cleanly if absent). Adds `jsonschema` as a dev dependency.
+
 ## [1.0.0] — 2026-06-22
 
 The California Energy Commission released **MIDAS v2.0 on 2026-06-22**, a breaking change to the live API. v1.0 was removed from the live service that day, so python-midas 1.0.0 is a **v2-only release** — v1.0 compatibility is intentionally dropped. See [doc/v2-migration.md](doc/v2-migration.md) for the v1.0→v2.0 upgrade guide, and the upstream [`midas-api-specs`](https://github.com/grid-coordination/midas-api-specs) `v2` branch for the spec-level delta. Every change below was verified by a live smoke-test against the production v2.0 API on release day. python-midas is a **read-only consumer client**: v2.0 GET endpoints are unauthenticated, so `create_anonymous_client` needs no credentials; the authenticated constructors remain for the utility upload path only.
@@ -43,6 +56,7 @@ The California Energy Commission released **MIDAS v2.0 on 2026-06-22**, a breaki
 
 Initial implementation. Two-layer raw/coerced data model: raw `httpx.Response` accessors plus coerced Pydantic entities (`RateInfo`, `ValueData`, `RinListEntry`, `Holiday`, `LookupEntry`) with `Decimal` prices and pendulum datetimes, each carrying its original wire dict on `_raw`. httpx-based `MIDASClient` with HTTP Basic → bearer-token auth and transparent auto-refresh (`AutoTokenAuth`); RIN list, rate values, lookup tables, holidays, and historical endpoints; signal-type helpers (`ghg`, `flex_alert`, `flex_alert_active`); domain enums (`SignalType`, `RateType`, `Unit`, `DayType`).
 
+[1.0.1]: https://github.com/grid-coordination/python-midas/releases/tag/v1.0.1
 [1.0.0]: https://github.com/grid-coordination/python-midas/releases/tag/v1.0.0
 [0.1.1]: https://github.com/grid-coordination/python-midas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/grid-coordination/python-midas/releases/tag/v0.1.0

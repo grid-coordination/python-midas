@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-midas"
-version = "1.0.0"
+version = "1.0.1"
 description = "Python client library for the California Energy Commission MIDAS API"
 readme = "README.md"
 license = "MIT"
@@ -35,6 +35,9 @@ dev = [
     "pytest>=8.0",
     "pytest-httpx>=0.30",
     "ruff>=0.3",
+    # Strict wire-contract validation in the integration suite (validates raw
+    # responses against the midas-api-specs JSON Schemas).
+    "jsonschema>=4.18",
 ]
 
 [project.urls]
